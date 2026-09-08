@@ -1,0 +1,27 @@
+# Local credentials and environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Installed dependencies and agent skills (reinstall from their manifests)
+node_modules/
+.agents/
+.codex/
+
+# Generated files, caches, exported reports and local backups
+.DS_Store
+*.log
+*.tsbuildinfo
+.backup*/
+.next/
+.vinext/
+.wrangler/
+.vercel/
+dist/
+coverage/
+outputs/
+work/

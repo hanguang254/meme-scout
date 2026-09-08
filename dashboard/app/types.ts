@@ -1,0 +1,172 @@
+export type Source = {
+  name: string;
+  url: string;
+  status: string;
+  error?: string;
+  warning?: string;
+  fetchedAt: string;
+};
+export type TapeEvent = {
+  id: string;
+  eventId: number;
+  ts: number;
+  candidateId: string;
+  address: string;
+  wallet: string | null;
+  tx: string | null;
+  side: 'buy' | 'sell';
+  symbol: string;
+  handle: string | null;
+  profileUrl: string | null;
+  followers: number | null;
+  usd: number | null;
+  price: number | null;
+  amount: number | null;
+  firstBuy: boolean | null;
+  priced: string;
+  flags: string[];
+  flagsKnown: boolean;
+  reason: string;
+};
+export type Tape = {
+  events: TapeEvent[];
+  source: Source | null;
+  quoteSources: Source[];
+  updatedAt: string | null;
+  nextPoll: string | null;
+  busy: boolean;
+  quoteBusy: boolean;
+  stale: boolean;
+  error: string | null;
+  gap: boolean;
+  intervalSeconds: number;
+  recentBuys: number;
+  recentWallets: number;
+  transport: 'socket' | 'polling';
+  socketStatus: string;
+  polledAt: string | null;
+  lastFillAt: string | null;
+  revisionStale: boolean;
+  stream: null | {
+    wallets: number | null;
+    trades: number | null;
+    lagSeconds: number | null;
+    indexerAge: number | null;
+    lastBlock: number | null;
+    viewers: number | null;
+    medianLatency: number | null;
+    observedAt: string;
+  };
+};
+export type Candidate = {
+  id: string;
+  chain: string;
+  address: string;
+  symbol: string;
+  name: string;
+  marketCap: number | null;
+  liquidity: number | null;
+  volume: number | null;
+  volumeWindow: string;
+  price: number | null;
+  change: number | null;
+  source: string;
+  sourceUrl: string;
+  lastTrade?: TapeEvent;
+  marketObservedAt?: string;
+  trench?: {
+    firstBuyer: string | null;
+    firstBuyAt: number | null;
+    radarBuyers: number | null;
+    lead: string | null;
+    followers: number | null;
+    totalUsd: number | null;
+    observedAt: string;
+  };
+  trackedBuyers: number | null;
+  trackedHolders: number | null;
+  netFlow: number | null;
+};
+export type Finding = {
+  id: string;
+  group: string;
+  severity: string;
+  title: string;
+  detail: string;
+  source: string;
+  value: unknown;
+};
+export type Report = {
+  verdict: string;
+  coverage: number;
+  evidenceSummary?: { total: number; checked: number; unknown: number };
+  checkedAt: string;
+  candidate: Candidate;
+  findings: Finding[];
+  sources: Source[];
+  walletSummary: {
+    top10: number | null;
+    excluded: number;
+    wallets: {
+      address: string;
+      share: number | null;
+      tags: string[];
+      funder: string | null;
+    }[];
+    clusters: { address: string; wallets: string[] }[];
+  };
+  developer: {
+    address: string | null;
+    total: number | null;
+    history: {
+      address: string;
+      symbol: string;
+      marketCap: number | null;
+      ath: number | null;
+      liquidity: number | null;
+      graduated: boolean | null;
+    }[];
+  };
+  social: null | {
+    posts: number;
+    authors: number;
+    duplicateRatio: number | null;
+    accountAgeCoverage: number;
+    youngAccountRatio: number | null;
+    verdict: string;
+    signals: string[];
+    missingChecks?: string[];
+    window: string;
+    limitations: string;
+    examples: {
+      id: string;
+      text: string;
+      author: string;
+      url: string;
+      createdAt: string;
+    }[];
+  };
+};
+export type Config = {
+  chain: string;
+  minCap: number;
+  maxCap: number;
+  minLiquidity: number;
+};
+export type State = {
+  enabled: boolean;
+  config: Config;
+  candidates: Candidate[];
+  reports: Record<string, Report>;
+  sources: Source[];
+  updatedAt: string | null;
+  nextRefresh: string | null;
+  busy: boolean;
+  scanning: string | null;
+  error: string | null;
+  unknownCap: number;
+  total: number;
+  connections: { gmgn: boolean; x: boolean };
+  freshForSeconds: number;
+  tape: Tape;
+};

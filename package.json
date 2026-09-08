@@ -1,0 +1,15 @@
+{
+  "name": "meme-scout-workspace",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix dashboard run dev",
+    "start": "npm --prefix dashboard start",
+    "build": "npm --prefix dashboard run build",
+    "test": "npm --prefix dashboard test",
+    "typecheck": "npm --prefix dashboard run typecheck",
+    "lint": "npm --prefix dashboard run lint"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}
