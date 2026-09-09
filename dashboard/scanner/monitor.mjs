@@ -29,7 +29,15 @@ const MIN_SCAN_GAP = 1000;
 // DexScreener takes no key, prices every chain watched here, and answers a whole
 // page of candidates in two requests. Quoting them on their own short timer
 // keeps the displayed price fresh without pulling the rest of discovery along.
-const MARKET_INTERVAL = 15000;
+// 6 seconds, not less. Measured: two unrelated solana pairs trading 300+ and
+// 550+ times per 5 minutes changed their numbers at the same instants, 31.8s
+// and 32.1s apart — DexScreener republishes on a ~32 second server-side cycle,
+// so a faster poll returns the identical bytes it just returned. What the
+// interval does control is this machine's own share of the delay: at 6s a newly
+// published price is on screen within 6 seconds of being published instead of
+// 15. Two batches per tick for a full page is 20 requests a minute against a
+// ~300/min allowance.
+const MARKET_INTERVAL = 6000;
 // A first scan defers the checks that are not worth making the whole list wait
 // for, so its report is short a category on purpose. Waiting out the full
 // freshness window before filling those in would leave the loop idle with known

@@ -88,6 +88,20 @@ const ageText = (at: string | null | undefined, now: number) => {
   const s = Math.max(0, Math.round((now - t) / 1000));
   return s < 60 ? `${s} 秒前` : `${Math.round(s / 60)} 分钟前`;
 };
+// lucide dropped its brand marks, so the X logo is inlined. It is a link
+// affordance only — nothing on this row is read from X, and the search results
+// behind it are not evidence of anything.
+const XMark = ({ size = 11 }: { size?: number }) => (
+  <svg
+    viewBox="0 0 24 24"
+    width={size}
+    height={size}
+    fill="currentColor"
+    aria-hidden="true"
+  >
+    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+  </svg>
+);
 const riskClass = (r?: Report) =>
   !r
     ? 'waiting'
@@ -675,11 +689,7 @@ export default function Home() {
                         onClick={() => setSelected(c.id)}
                       >
                         <TableCell>
-                          <button
-                            className="token-cell"
-                            onClick={() => setSelected(c.id)}
-                            aria-label={`高亮 ${c.symbol}`}
-                          >
+                          <div className="token-cell">
                             <span className="rank">
                               {String(i + 1).padStart(2, '0')}
                             </span>
@@ -687,13 +697,42 @@ export default function Home() {
                               {c.symbol.slice(0, 2)}
                             </span>
                             <span>
-                              <strong>{c.symbol}</strong>
+                              <span className="token-head">
+                                {/* The row itself still selects on click; this
+                                    button is what makes the name reachable by
+                                    keyboard. It is a button rather than the
+                                    whole cell so the X link can sit beside the
+                                    name — an anchor cannot live in a button. */}
+                                <button
+                                  className="token-pick"
+                                  onClick={() => setSelected(c.id)}
+                                  aria-label={`高亮 ${c.symbol}`}
+                                >
+                                  {c.symbol}
+                                </button>
+                                <a
+                                  className="x-search"
+                                  href={`https://x.com/search?q=${encodeURIComponent(c.address)}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  title={`在 X 搜索合约地址 ${c.address}。搜到的帖子只是有人贴过这个地址，不是风险证据，也不代表真人讨论——发帖的可能是项目方、机器人或批量转发。数量多寡都不参与本页任何判级。`}
+                                  aria-label={`在 X 搜索 ${c.symbol} 的合约地址`}
+                                >
+                                  <XMark />
+                                </a>
+                              </span>
                               <small
                                 title={`实时市值 ${money(c.marketCap)}，取自 ${c.marketCapSource || c.source}${
                                   marketAge ? `，${marketAge}读取` : ''
                                 }。完全稀释估值 ${money(c.fdv)}；两者的差是未计入流通的供应量，来源没有公布它用的流通量，也没有说明差在哪里，所以不能互相替代。`}
                               >
-                                {money(c.marketCap)}
+                                {/* Remounting on a new value restarts the
+                                    flash, so the eye is drawn only when the
+                                    number actually moved — not every poll. */}
+                                <span className="tick" key={c.marketCap}>
+                                  {money(c.marketCap)}
+                                </span>
                               </small>
                               {since && r?.first && (
                                 <small
@@ -728,11 +767,20 @@ export default function Home() {
                                 </span>
                               )}
                             </span>
-                          </button>
+                          </div>
                         </TableCell>
                         <TableCell>
-                          <strong>{money(c.volume)}</strong>
-                          <small>LP {money(c.liquidity)}</small>
+                          <strong>
+                            <span className="tick" key={c.volume}>
+                              {money(c.volume)}
+                            </span>
+                          </strong>
+                          <small>
+                            LP{' '}
+                            <span className="tick" key={c.liquidity}>
+                              {money(c.liquidity)}
+                            </span>
+                          </small>
                           {(c.buys5m != null ||
                             c.sells5m != null ||
                             c.volume5m != null) && (
