@@ -87,6 +87,51 @@ test('a live quote never rewrites the market cap a stored report was built at', 
   m.pause();
 });
 
+// The latest report is re-taken every rescan, so the drift measured against it
+// can never show more than a couple of minutes of movement. The first report's
+// cap is the only anchor on the page older than that, and a rescan must not
+// quietly move it to the current price.
+test('a rescan replaces the report but not the first cap it was found at', async () => {
+  let now = Date.parse('2026-01-01T00:00:00Z');
+  let cap = 100000;
+  const m = new Monitor({
+    clock: () => now,
+    discover: async () => discovery([candidate({ marketCap: cap })]),
+    collect: async () => ({ data: {}, sources: [], gmgnCalls: 0 }),
+    autoSchedule: false,
+  });
+  await m.refresh();
+  await m.scan();
+  const first = m.state.reports['sol:a'].first;
+  assert.deepEqual(first, { marketCap: 100000, at: '2026-01-01T00:00:00.000Z' });
+  assert.equal(first.at, m.state.reports['sol:a'].checkedAt);
+
+  // Past both the 180s freshness gate and the 60s per-coin retry gate.
+  now += 200000;
+  cap = 40000;
+  await m.refresh();
+  await m.scan();
+  const r = m.state.reports['sol:a'];
+  assert.equal(r.candidate.marketCap, 40000, '核验时必须跟着最近一次重扫');
+  assert.notEqual(r.checkedAt, first.at);
+  assert.deepEqual(r.first, first, '首次市值不能被重扫改写');
+  m.pause();
+});
+
+test('a live quote never rewrites the first cap either', async () => {
+  const m = new Monitor({
+    discover: async () => discovery([candidate()]),
+    collect: async () => ({ data: {}, sources: [], gmgnCalls: 0 }),
+    quoteMarket: async () => quotes([['aabb', { marketCap: 250000 }]]),
+    autoSchedule: false,
+  });
+  await m.refresh();
+  await m.scan();
+  await m.tickMarket();
+  assert.equal(m.state.reports['sol:a'].first.marketCap, 100000);
+  m.pause();
+});
+
 test('the quote refreshes prices without changing which candidates are listed', async () => {
   // A cap that drifts outside the configured range must not drop the coin
   // mid-scan: membership belongs to discovery, and dropping it here would throw

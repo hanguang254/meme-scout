@@ -37,6 +37,20 @@ const MARKET_INTERVAL = 15000;
 const incomplete = (report) =>
   (report?.sources || []).some((s) => s.status === 'deferred');
 const withoutData = ({ data: _data, ...meta }) => meta;
+// The market cap the first report was written at, carried forward unchanged
+// through every rescan. Without it the only anchor on the page is the latest
+// report, which is re-taken every ~101 seconds, so the drift beside it can
+// never show more than a few minutes of movement.
+// Copied out as plain numbers rather than kept as a reference to the candidate:
+// the quote loop replaces candidate objects on its own timer, and an anchor
+// that tracked one would quietly re-anchor itself.
+// The cap is always present here: selectCandidates drops rows without one, so a
+// coin cannot reach a report without a market cap to anchor to.
+// It is the first *report*, not the first sighting — discovery sees a coin
+// before the scanner reaches it — which is why the panel shows the anchor's
+// time rather than calling it the moment the coin was found.
+const firstMark = (prev, candidate, at) =>
+  prev?.first ?? { marketCap: candidate.marketCap, at };
 const emptyMarket = () => ({
   observedAt: null,
   nextTick: null,
@@ -727,6 +741,7 @@ export class Monitor {
           // real one behind a fresh timestamp for the next three minutes.
           const limited =
             info?.status === 'error' && /限流|超时/.test(info.error || '');
+          const checkedAt = new Date(this.clock()).toISOString();
           if (limited) {
             // The attempt still counts: a timeout sets no cooldown, and retrying
             // it immediately would starve every other candidate in the queue.
@@ -739,7 +754,8 @@ export class Monitor {
             s.reports[candidate.id] = {
               ...evaluateRisk(candidate, raw.data, raw.sources),
               candidate,
-              checkedAt: new Date(this.clock()).toISOString(),
+              first: firstMark(s.reports[candidate.id], candidate, checkedAt),
+              checkedAt,
               sources: raw.sources.map(withoutData),
               raw: raw.data,
             };

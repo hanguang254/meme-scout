@@ -654,6 +654,13 @@ export default function Home() {
                 {rows.map((c, i) => {
                   const r = state?.reports[c.id];
                   const moved = drift(r?.candidate.marketCap, c.marketCap);
+                  // Only worth its own line once a rescan has moved the other
+                  // anchor away from it; on the first report the two lines
+                  // would hold the same number twice.
+                  const since =
+                    r?.first && r.first.at !== r.checkedAt
+                      ? drift(r.first.marketCap, c.marketCap)
+                      : null;
                   const old = Boolean(
                     r &&
                     observedNow - Date.parse(r.checkedAt) >
@@ -688,6 +695,17 @@ export default function Home() {
                               >
                                 {money(c.marketCap)}
                               </small>
+                              {since && r?.first && (
+                                <small
+                                  className="cap-checked"
+                                  title={`第一份报告写于 ${time(r.first.at)}，当时市值 ${money(r.first.marketCap)}。这个锚点不随重扫改变，所以它量的是从第一次出报告到现在；下面一行量的是从最近一次重扫到现在。该币掉出名单超过 15 分钟、报告被清理后才会重新计起。`}
+                                >
+                                  首次 {money(r.first.marketCap)}
+                                  <span className={`cap-drift ${since.cls}`}>
+                                    {since.text}
+                                  </span>
+                                </small>
+                              )}
                               {r && (
                                 <small
                                   className="cap-checked"

@@ -119,6 +119,10 @@ export type Report = {
   evidenceSummary?: { total: number; checked: number; unknown: number };
   checkedAt: string;
   candidate: Candidate;
+  // The market cap of the first report written for this coin. Rescans replace
+  // `candidate`; this one is carried forward, so it is the only anchor on the
+  // page older than the last few minutes. Null until a report has a cap at all.
+  first?: { marketCap: number | null; at: string } | null;
   findings: Finding[];
   sources: Source[];
   walletSummary: {
