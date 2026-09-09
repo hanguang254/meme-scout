@@ -166,6 +166,90 @@ test('wallet classes below the review threshold stay an observation', () => {
   assert.equal(sampleOnly.severity, 'info');
 });
 
+test('the holder count keeps both reported fields and is labelled as addresses, not people', () => {
+  const agree = find(
+    at({ data: { info: { holder_count: 192, stat: { holder_count: 192 } } } }),
+    'holder-count',
+  );
+  assert.equal(agree.group, 'holders');
+  assert.equal(agree.severity, 'info');
+  assert.equal(agree.value.holders, 192);
+  assert.match(agree.detail, /来源报告 192 个持有地址/);
+  assert.match(agree.detail, /这是地址数不是人数/);
+  assert.match(agree.detail, /不参与风险判级/);
+  assert.doesNotMatch(agree.detail, /不一致/);
+
+  // The two snapshots can differ by a few addresses. Neither is dropped and
+  // neither is averaged into a number no source reported.
+  const split = find(
+    at({ data: { info: { holder_count: 611, stat: { holder_count: 610 } } } }),
+    'holder-count',
+  );
+  assert.equal(split.value.holders, 611);
+  assert.deepEqual(
+    split.value.observations.map((o) => o.value),
+    [611, 610],
+  );
+  // Both labels must stay distinguishable: trimming each to its last segment
+  // would print the same name twice and leave the reader unable to tell which
+  // field reported which number.
+  assert.match(split.detail, /holder_count 611 \/ stat\.holder_count 610 两个字段不一致，未取平均/);
+
+  // A wider gap pins the headline to the field the source's own page shows.
+  // Averaging would report a number neither field returned.
+  const wide = find(
+    at({ data: { info: { holder_count: 611, stat: { holder_count: 401 } } } }),
+    'holder-count',
+  );
+  assert.equal(wide.value.holders, 611);
+  assert.match(wide.detail, /来源报告 611 个持有地址/);
+
+  // A count of zero is a real answer; a missing or malformed one is not.
+  assert.equal(find(at({ data: { info: { holder_count: 0 } } }), 'holder-count').value.holders, 0);
+  assert.equal(find(at({ data: { info: { holder_count: -3 } } }), 'holder-count'), undefined);
+  assert.equal(find(at({ data: { info: { holder_count: null } } }), 'holder-count'), undefined);
+});
+
+test('the page-view count stays an observation and says the source published no window', () => {
+  const visits = find(at({ data: { info: { visiting_count: '727' } } }), 'visiting-count');
+  assert.equal(visits.severity, 'info');
+  assert.equal(visits.value.visits, 727);
+  assert.equal(visits.value.window, null);
+  assert.equal(visits.value.deduplicated, null);
+  assert.match(visits.detail, /没有公布统计窗口/);
+  assert.match(visits.detail, /不能读成「727 个人在看」/);
+  assert.equal(find(at({ data: { info: {} } }), 'visiting-count'), undefined);
+});
+
+// Filing it under `social` would let a page-view counter mark the discussion
+// category covered, reporting six of six while X was never queried.
+test('the page-view count cannot make the social category count as covered', () => {
+  const report = evaluateRisk(
+    { chain: 'sol', address: 'x' },
+    { info: { symbol: 'T', visiting_count: 5000, image_dup_count: 4 } },
+  );
+  const visits = find(report.findings, 'visiting-count');
+  assert.equal(visits.group, 'liquidity');
+  assert.equal(
+    report.findings.filter((f) => f.group === 'social' && f.severity !== 'unknown').length,
+    0,
+  );
+  assert.ok(report.coverage < 6);
+});
+
+test('the duplicate-image count is shown as a number and never graded', () => {
+  const dup = find(at({ data: { info: { image_dup_count: 4 } } }), 'image-dup');
+  assert.equal(dup.group, 'contract');
+  assert.equal(dup.severity, 'info');
+  assert.equal(dup.value.imageDup, 4);
+  assert.equal(dup.value.includesSelf, null);
+  assert.match(dup.detail, /来源报告有 4 个代币在用同一张图片/);
+  assert.match(dup.detail, /不据此判级/);
+  // A high count is still not a risk grade: the source publishes no method.
+  assert.equal(find(at({ data: { info: { image_dup_count: 900 } } }), 'image-dup').severity, 'info');
+  assert.equal(find(at({ data: { info: { image_dup_count: 'x' } } }), 'image-dup'), undefined);
+});
+
 test('the new evidence joins the existing six groups without moving the coverage denominator', () => {
   const report = evaluateRisk(
     { chain: 'sol', address: 'x', rugRatio: 0.2 },

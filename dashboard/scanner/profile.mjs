@@ -192,5 +192,63 @@ export function buildProfileFindings(data = {}, candidate = {}, now = Date.now()
       },
     );
   }
+
+  // The source reports the holder count in two places and the two are taken at
+  // slightly different moments, so they can disagree by a few addresses. Both
+  // are kept and neither is averaged away; the headline is the top-level field
+  // because it is the one the source's own token page shows.
+  const holderCounts = [
+    ['info.holder_count', number(info.holder_count)],
+    ['info.stat.holder_count', number(info.stat?.holder_count)],
+  ]
+    .filter(([, value]) => value !== null && value >= 0)
+    .map(([field, value]) => ({ field, value }));
+  if (holderCounts.length) {
+    const holders = holderCounts[0].value;
+    const disagrees = holderCounts.some((o) => o.value !== holders);
+    add(
+      'holder-count',
+      'holders',
+      'info',
+      '持有地址数',
+      `来源报告 ${holders} 个持有地址${
+        disagrees
+          ? `（${holderCounts
+              .map((o) => `${o.field.replace(/^info\./, '')} ${o.value}`)
+              .join(' / ')} 两个字段不一致，未取平均）`
+          : ''
+      }。这是地址数不是人数——同一个人可以持有多个地址，交易池与合约地址是否计入来源没有说明。地址多少不参与风险判级：新币早期天然人少，地址多的老币一样会跑路。它的用处是给其余持仓比例一个分母`,
+      'GMGN info.holder_count / info.stat.holder_count',
+      { holders, observations: holderCounts },
+    );
+  }
+
+  // Attention, not an on-chain fact. Filed under the market group rather than
+  // social: the social group's only real evidence is the X sample, and letting
+  // a page-view counter mark that category "covered" would report six of six
+  // when the discussion was never checked at all.
+  const visits = number(info.visiting_count);
+  if (visits !== null && visits >= 0)
+    add(
+      'visiting-count',
+      'liquidity',
+      'info',
+      'GMGN 浏览数',
+      `来源站内浏览计数 ${visits}。来源没有公布统计窗口，也没有说明同一访客重复打开是否只算一次，所以这个数不能读成「${visits} 个人在看」。关注度不参与风险判级：热度可能是自然流量，也可能是买来的`,
+      'GMGN info.visiting_count',
+      { visits, window: null, deduplicated: null },
+    );
+
+  const imageDup = number(info.image_dup_count);
+  if (imageDup !== null && imageDup >= 0)
+    add(
+      'image-dup',
+      'contract',
+      'info',
+      '同图代币',
+      `来源报告有 ${imageDup} 个代币在用同一张图片。同图常见于仿盘和批量发币，但也可能是同一团队的系列代币，或来源图片指纹的碰撞；来源没有公布比对方式与是否含本币，因此这里只显示数字，不据此判级`,
+      'GMGN info.image_dup_count',
+      { imageDup, includesSelf: null },
+    );
   return findings;
 }

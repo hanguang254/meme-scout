@@ -4,15 +4,18 @@ import {
   Bot,
   Clock,
   Droplets,
+  Eye,
   FileCode,
   Fingerprint,
   HelpCircle,
+  Images,
   KeyRound,
   Lock,
   MessageCircle,
   Percent,
   Pickaxe,
   UsersRound,
+  Wallet,
 } from 'lucide-react';
 import type { Finding, Report } from './types';
 
@@ -49,6 +52,15 @@ const compactUsd = (v: unknown) => {
     : new Intl.NumberFormat('en-US', {
         style: 'currency',
         currency: 'USD',
+        notation: 'compact',
+        maximumFractionDigits: 1,
+      }).format(n);
+};
+const compact = (v: unknown) => {
+  const n = num(v);
+  return n === null
+    ? null
+    : new Intl.NumberFormat('en-US', {
         notation: 'compact',
         maximumFractionDigits: 1,
       }).format(n);
@@ -243,6 +255,18 @@ const slots: Slot[] = [
     },
   },
   {
+    key: 'holder-count',
+    name: '持有地址数',
+    Icon: Wallet,
+    hint: '这个图标：来源报告的持有地址个数。是地址不是人 —— 一个人可以有多个地址，池子和合约地址算不算来源没说。这个数不判定风险，只给其余持仓比例一个分母。',
+    ids: ['holder-count'],
+    value: (f) => {
+      const v = record(f.get('holder-count')?.value);
+      const n = compact(v.holders);
+      return n === null ? '有地址' : `${n} 地址`;
+    },
+  },
+  {
     key: 'holders',
     name: 'Top10 集中度',
     Icon: UsersRound,
@@ -348,6 +372,17 @@ const slots: Slot[] = [
     },
   },
   {
+    key: 'image-dup',
+    name: '同图代币',
+    Icon: Images,
+    hint: '这个图标：有多少个代币在用同一张图片。同图常见于仿盘和批量发币，但也可能是同一团队的系列币或来源指纹碰撞，来源没公布比对方式，所以只显示数字不判级。',
+    ids: ['image-dup'],
+    value: (f) => {
+      const n = num(record(f.get('image-dup')?.value).imageDup);
+      return n === null ? '有记录' : `同图 ${n}`;
+    },
+  },
+  {
     key: 'social',
     name: 'X 讨论',
     Icon: MessageCircle,
@@ -355,6 +390,17 @@ const slots: Slot[] = [
     ids: ['social'],
     value: (f) =>
       f.get('social')?.severity === 'medium' ? '有异常' : '有样本',
+  },
+  {
+    key: 'visiting',
+    name: 'GMGN 浏览数',
+    Icon: Eye,
+    hint: '这个图标：来源站内的浏览计数。窗口多长、同一访客重复打开算不算一次，来源都没公布，所以不能读成「多少个人在看」。关注度不参与风险判级。',
+    ids: ['visiting-count'],
+    value: (f) => {
+      const n = compact(record(f.get('visiting-count')?.value).visits);
+      return n === null ? '有浏览' : `${n} 浏览`;
+    },
   },
 ];
 
