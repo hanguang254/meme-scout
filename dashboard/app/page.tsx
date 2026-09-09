@@ -67,10 +67,20 @@ const time = (s: string | null | undefined) =>
 // How far the live number has moved from the one the report was written against.
 // Null when either end is missing: a report with no market cap of its own has
 // nothing to compare, and showing 0% there would claim the price held still.
+// The colour is decided from the rounded number, not the raw one, so a move too
+// small to survive rounding reads 0.0% and stays grey instead of being painted
+// green. Green and red mean only "moved up / moved down since the check" —
+// a rise on a token that can still be minted is not good news, so this reuses
+// the same green/red as the 1h change column and never the risk colours.
 const drift = (then: number | null | undefined, now: number | null | undefined) => {
   if (then == null || now == null || then === 0) return null;
-  const d = ((now - then) / then) * 100;
-  return `${d > 0 ? '+' : ''}${d.toFixed(Math.abs(d) < 10 ? 1 : 0)}%`;
+  const raw = ((now - then) / then) * 100;
+  const digits = Math.abs(raw) < 10 ? 1 : 0;
+  const d = Number(raw.toFixed(digits));
+  return {
+    cls: d > 0 ? 'green' : d < 0 ? 'red' : '',
+    text: `${d > 0 ? '+' : ''}${d.toFixed(digits)}%`,
+  };
 };
 const ageText = (at: string | null | undefined, now: number) => {
   const t = at ? Date.parse(at) : NaN;
@@ -643,6 +653,7 @@ export default function Home() {
               <TableBody>
                 {rows.map((c, i) => {
                   const r = state?.reports[c.id];
+                  const moved = drift(r?.candidate.marketCap, c.marketCap);
                   const old = Boolean(
                     r &&
                     observedNow - Date.parse(r.checkedAt) >
@@ -683,8 +694,11 @@ export default function Home() {
                                   title={`这份报告是在市值 ${money(r.candidate.marketCap)} 时写的（${time(r.checkedAt)}）。上面的市值每 ${state?.market?.intervalSeconds ?? 15} 秒重取一次，报告只在重扫时更新，所以两个数不同是正常的。涨跌幅只是两次取值之间的差，不是风险判断。`}
                                 >
                                   核验时 {money(r.candidate.marketCap)}
-                                  {drift(r.candidate.marketCap, c.marketCap) &&
-                                    ` ${drift(r.candidate.marketCap, c.marketCap)}`}
+                                  {moved && (
+                                    <span className={`cap-drift ${moved.cls}`}>
+                                      {moved.text}
+                                    </span>
+                                  )}
                                 </small>
                               )}
                               {c.lastTrade && (
