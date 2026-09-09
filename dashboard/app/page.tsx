@@ -81,6 +81,23 @@ const safeUrl = (u: string) => {
     return '#';
   }
 };
+// A rescan reuses the evidence that does not move between scans. The report
+// header says which parts those were and when they were actually fetched, so a
+// carried finding is never read as having been checked at the report's time.
+const carriedNote = (r: Report) => {
+  const carried = (r.sources || []).filter((s) => s.reused);
+  if (!carried.length) return '';
+  const at = carried
+    .map((s) => Date.parse(s.fetchedAt))
+    .filter((t) => Number.isFinite(t));
+  if (!at.length) return '';
+  const minutes = Math.round(
+    (Date.parse(r.checkedAt) - Math.min(...at)) / 60000,
+  );
+  return ` · ${carried.map((s) => s.name).join('、')}沿用 ${time(
+    new Date(Math.min(...at)).toISOString(),
+  )} 取得${minutes >= 1 ? `（早 ${minutes} 分钟）` : ''}`;
+};
 function SourceList({ sources }: { sources: Source[] }) {
   return (
     <div className="sources">
@@ -120,6 +137,7 @@ export default function Home() {
     [saved, setSaved] = useState(false),
     [pending, setPending] = useState(false),
     [observedNow, setObservedNow] = useState(0);
+  const pace = state?.gmgnPace;
   const [config, setConfig] = useState<Config>({
     chain: 'robinhood',
     minCap: 10000,
@@ -347,6 +365,12 @@ export default function Home() {
             {error || state?.error}
           </div>
         )}
+        {pace && pace.current < pace.target && (
+          <output className="error-banner">
+            <CircleAlert size={17} />
+            {`${time(pace.reducedAt)} GMGN 返回过限流，扫描速率已从 ${pace.target} 次/分降到 ${pace.current} 次/分并保持到重启。重查一轮更慢，过期标记会更常见。`}
+          </output>
+        )}
         <div className="stat-grid">
           <div className="stat-box">
             <span>
@@ -525,26 +549,57 @@ export default function Home() {
             </span>
             <span>{state?.unknownCap || 0} 个市值未知，未纳入</span>
           </div>
-          <Tabs value={mode} onValueChange={(v) => setMode(String(v))}>
-            <TabsList variant="line" className="market-tabs">
-              <TabsTrigger value="all">
-                全部候选<span>{state?.candidates.length || 0}</span>
-              </TabsTrigger>
-              <TabsTrigger value="risk">
-                高风险<span>{riskCount}</span>
-              </TabsTrigger>
-              <TabsTrigger value="pending">
-                待核验
-                <span>
-                  {Math.max(
-                    0,
-                    (state?.candidates.length || 0) -
-                      Object.keys(state?.reports || {}).length,
-                  )}
-                </span>
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
+          <div className="list-controls">
+            <Tabs value={mode} onValueChange={(v) => setMode(String(v))}>
+              <TabsList variant="line" className="market-tabs">
+                <TabsTrigger value="all">
+                  全部候选<span>{state?.candidates.length || 0}</span>
+                </TabsTrigger>
+                <TabsTrigger value="risk">
+                  高风险<span>{riskCount}</span>
+                </TabsTrigger>
+                <TabsTrigger value="pending">
+                  待核验
+                  <span>
+                    {Math.max(
+                      0,
+                      (state?.candidates.length || 0) -
+                        Object.keys(state?.reports || {}).length,
+                    )}
+                  </span>
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <div className="sort-switch">
+              <span aria-hidden>排序</span>
+              {(
+                [
+                  [
+                    'heat',
+                    '热度',
+                    '按来源热度排序：追踪钱包买家数多的在前，相同则成交额大的在前。这是发现接口给出的原始顺序。',
+                  ],
+                  [
+                    'new',
+                    '最新',
+                    '按建池时间从新到旧排序。取不到创建时间的候选留在原来的热度位置，不猜、也不当作新币。这里的时间是交易对/池的创建时间，不是代币合约的部署时间——换池会得到更“新”的时间。',
+                  ],
+                ] as const
+              ).map(([key, label, hint]) => (
+                <button
+                  key={key}
+                  type="button"
+                  title={hint}
+                  aria-label={hint}
+                  aria-pressed={(state?.sort || 'heat') === key}
+                  disabled={pending || !state}
+                  onClick={() => void post('/api/monitor', { sort: key })}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="candidate-table">
             <Table>
               <TableHeader>
@@ -640,7 +695,7 @@ export default function Home() {
                           </span>
                           <small>
                             {r
-                              ? `${time(r.checkedAt)} 核验 · ${r.coverage}/6 类有证据`
+                              ? `${time(r.checkedAt)} 核验 · ${r.coverage}/6 类有证据${carriedNote(r)}`
                               : '尚未判定风险'}
                           </small>
                         </TableCell>

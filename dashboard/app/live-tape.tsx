@@ -121,7 +121,7 @@ export function LiveTape({
           <span
             title={
               tape?.transport === 'socket'
-                ? '已连上来源推送通道，成交在上游落库后即时到达。仍受来源索引延迟影响。'
+                ? '已连上来源推送通道，新成交与来源事后改判的异常标记都即时到达。仍受来源索引延迟影响。'
                 : '推送通道未建立或已断开，退回按固定间隔读取；延迟至少一个间隔。'
             }
           >
@@ -168,7 +168,7 @@ export function LiveTape({
         </span>
         <span>
           {tape?.transport === 'socket'
-            ? `推送通道 · 每 ${tape?.intervalSeconds || 60} 秒复核修订`
+            ? `推送通道 · 修订即时到达，每 ${tape?.intervalSeconds || 60} 秒全量兜底`
             : `每 ${tape?.intervalSeconds || 5} 秒读取`}{' '}
           · 最近成交{' '}
           {tape?.lastFillAt
@@ -186,7 +186,7 @@ export function LiveTape({
       </div>
       {tape?.revisionStale && enabled && (
         <output className="tape-warning">
-          已展示行的修订复核未按时完成：推送只带新成交，来源事后改判的异常标记暂未取得。
+          已展示行的兜底全量重读未按时完成：推送只覆盖来源当前标记的 ID 区间，区间以外的改判暂未取得。
         </output>
       )}
       {tape?.error && (

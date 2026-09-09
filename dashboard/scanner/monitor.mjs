@@ -1,4 +1,11 @@
-import { CHAINS, selectCandidates, evaluateRisk, number } from './risk.mjs';
+import {
+  CHAINS,
+  selectCandidates,
+  orderCandidates,
+  evaluateRisk,
+  number,
+  SORTS,
+} from './risk.mjs';
 import {
   mergeTape,
   normalizeTape,
@@ -11,6 +18,18 @@ import {
 // Subscriber pushes are coalesced: a burst of fills should reach the page at
 // once rather than re-serialising the whole state per row.
 const NOTIFY_INTERVAL = 200;
+// Pacing belongs to the source limiter, which meters real call starts and so
+// holds one requests-per-minute figure whatever the latency does. A sleep here
+// on top of it would just make the queue slower than the pace we chose. The
+// floor exists for the other case: a scan that reached the rate-limited source
+// zero times must not let the loop spin.
+const MIN_SCAN_GAP = 1000;
+// A first scan defers the checks that are not worth making the whole list wait
+// for, so its report is short a category on purpose. Waiting out the full
+// freshness window before filling those in would leave the loop idle with known
+// gaps on the board; they queue behind the coins that have nothing at all.
+const incomplete = (report) =>
+  (report?.sources || []).some((s) => s.status === 'deferred');
 const withoutData = ({ data: _data, ...meta }) => meta;
 const emptyTape = () => ({
   events: [],
@@ -39,9 +58,13 @@ export class Monitor {
     openTapeSocket = null,
     autoSchedule = true,
     clock = Date.now,
+    gmgnCooldown = () => 0,
+    gmgnPace = () => null,
   }) {
     this.discover = discover;
     this.collect = collect;
+    this.gmgnCooldown = gmgnCooldown;
+    this.gmgnPace = gmgnPace;
     this.autoSchedule = autoSchedule;
     this.clock = clock;
     this.fetchTape = fetchTape;
@@ -68,6 +91,9 @@ export class Monitor {
         maxCap: 5000000,
         minLiquidity: 5000,
       },
+      // Display order only. Kept outside config because config changes discard
+      // every cached report, and re-ordering a list must not cost a rescan.
+      sort: 'heat',
       candidates: [],
       reports: {},
       sources: [],
@@ -116,6 +142,15 @@ export class Monitor {
     // The socket is bound to one chain's fills; a chain switch must drop it.
     this.stopTapeStream();
     if (this.state.enabled) this.startTapeStream();
+    this.push();
+  }
+  // Re-ordering issues no request and keeps every cached report, so unlike
+  // configure() this reuses the candidates already discovered.
+  setSort(sort) {
+    if (!SORTS.includes(sort)) throw new Error('排序方式无效');
+    if (this.state.sort === sort) return;
+    this.state.sort = sort;
+    this.reconcile();
     this.push();
   }
   pause() {
@@ -183,6 +218,9 @@ export class Monitor {
       onFills: (rows) => {
         if (current()) this.ingestFills(rows);
       },
+      onLabels: (map) => {
+        if (current()) this.applyLabels(map);
+      },
       onHello: (data) => {
         if (!current()) return;
         // Reported by the source at connect time, not a live measurement.
@@ -233,8 +271,8 @@ export class Monitor {
     tape.intervalSeconds = TAPE_INTERVAL / 1000;
   }
   tapeInterval() {
-    // A live socket already delivers new fills; the reader then runs only often
-    // enough to pick up upstream's later re-judgement of rows already on screen.
+    // A live socket delivers new fills and re-judged flags on its own; the
+    // reader then runs only often enough to backstop the rows it cannot cover.
     return this.state.tape.socketStatus === 'live'
       ? TAPE_RELABEL_INTERVAL
       : TAPE_INTERVAL;
@@ -251,6 +289,52 @@ export class Monitor {
     tape.lastFillAt = new Date(now).toISOString();
     tape.stale = false;
     tape.error = null;
+    this.reconcile();
+    void this.resolveLive();
+    void this.scan();
+    this.push();
+  }
+  // Upstream re-judges a fill after it lands — a stranger turning out to have
+  // funded the buy, a pool pulled minutes later — and pushes the new verdict on
+  // the same socket. Applying it here is what keeps a revoked buy from holding
+  // its priority seat until the next full read.
+  applyLabels(map) {
+    // The frame lists only the ids upstream currently flags, so an id missing
+    // from it means "no flags" — but only across the span the frame speaks for.
+    // Our tape reaches further back than that span, and reading absence as
+    // "cleared" outside it would silently drop warnings the frame never covered.
+    let low = Infinity,
+      high = -Infinity;
+    const flags = new Map();
+    for (const [key, value] of Object.entries(map)) {
+      const id = number(key);
+      if (!Number.isSafeInteger(id) || id <= 0) continue;
+      // One unusable entry is not a reason to discard the rest of the frame;
+      // the row it names simply keeps the flags it already had.
+      if (!Array.isArray(value) || value.some((f) => typeof f !== 'string'))
+        continue;
+      flags.set(
+        id,
+        value.slice(0, 20).map((f) => f.slice(0, 160)),
+      );
+      if (id < low) low = id;
+      if (id > high) high = id;
+    }
+    if (low > high) return;
+    const tape = this.state.tape;
+    let changed = false;
+    tape.events = tape.events.map((t) => {
+      if (t.eventId < low || t.eventId > high) return t;
+      const next = flags.get(t.eventId) ?? [];
+      // A row whose flags were unreadable at read time counts as changed even
+      // when the frame agrees it has none: unknown and none are not the same.
+      if (t.flagsKnown && t.flags.join('|') === next.join('|')) return t;
+      changed = true;
+      return { ...t, flags: next, flagsKnown: true };
+    });
+    if (!changed) return;
+    // Deliberately not touching polledAt: only a completed full read proves the
+    // rows outside this frame's span were re-collected too.
     this.reconcile();
     void this.resolveLive();
     void this.scan();
@@ -300,9 +384,14 @@ export class Monitor {
         .filter((c) => eligibleBuy(c.lastTrade, now))
         .slice(0, 10),
       ids = new Set(priority.map((c) => c.id));
+    // Order before the cap, so a token that ranks low on heat can still reach
+    // the list on age. Live buys keep the front regardless of the chosen order.
     s.candidates = [
       ...priority,
-      ...picked.selected.filter((c) => !ids.has(c.id)),
+      ...orderCandidates(
+        picked.selected.filter((c) => !ids.has(c.id)),
+        s.sort,
+      ),
     ].slice(0, 40);
     s.total = merged.size;
     s.unknownCap = picked.unknownCap;
@@ -488,6 +577,7 @@ export class Monitor {
           .filter(
             (c) =>
               (!s.reports[c.id] ||
+                incomplete(s.reports[c.id]) ||
                 this.clock() - Date.parse(s.reports[c.id].checkedAt) >
                   180000) &&
               this.clock() - (this.scanAttempts.get(c.id) ?? -Infinity) >=
@@ -507,16 +597,39 @@ export class Monitor {
         const candidate =
           this.liveStarts < 2 ? live || waiting[0] : ordinary || waiting[0];
         if (!candidate) break;
+        // Scanning through a cooldown produces a token's worth of rate-limit
+        // errors per candidate and nothing else. Wait it out instead.
+        const until = this.gmgnCooldown();
+        if (until > this.clock()) {
+          s.error = `GMGN 限流，扫描暂停至 ${new Date(until).toISOString()}`;
+          this.push();
+          if (!this.autoSchedule) break;
+          await new Promise((r) => setTimeout(r, until - this.clock()));
+          continue;
+        }
         this.liveStarts = candidate === live ? this.liveStarts + 1 : 0;
         this.scanAttempts.set(candidate.id, this.clock());
         const generation = s.generation;
         s.scanning = candidate.id;
+        let spent = 0;
         try {
           const raw = await this.collect(
             candidate,
             () => s.enabled && generation === s.generation,
+            s.reports[candidate.id] ?? null,
           );
-          if (
+          spent = raw.gmgnCalls ?? 0;
+          const info = raw.sources.find((r) => r.key === 'info');
+          // A rate-limited scan skips security, holders and dev entirely. Writing
+          // it would stamp a near-empty report as checked now and hide the older,
+          // real one behind a fresh timestamp for the next three minutes.
+          const limited =
+            info?.status === 'error' && /限流|超时/.test(info.error || '');
+          if (limited) {
+            // The attempt still counts: a timeout sets no cooldown, and retrying
+            // it immediately would starve every other candidate in the queue.
+            s.error = `${candidate.symbol} 未重查：${info.error}`;
+          } else if (
             s.enabled &&
             generation === s.generation &&
             s.candidates.some((c) => c.id === candidate.id)
@@ -536,9 +649,9 @@ export class Monitor {
           s.scanning = null;
         }
         if (!this.autoSchedule) break;
-        // At most ten complete token starts/minute; source cooldowns apply globally.
-        if (s.enabled)
-          await new Promise((resolve) => setTimeout(resolve, 6000));
+        // A scan that spent nothing at the limiter was never paced by it.
+        if (s.enabled && !spent)
+          await new Promise((resolve) => setTimeout(resolve, MIN_SCAN_GAP));
       }
     })();
     try {
@@ -566,8 +679,8 @@ export class Monitor {
             : s.tape.stale ||
               !s.tape.updatedAt ||
               now - Date.parse(s.tape.updatedAt) > 20000,
-        // The socket carries new fills only. Without a completed read, upstream's
-        // later re-judgement of rows already on screen has not been collected.
+        // Pushed labels only speak for the ids upstream currently flags. Without
+        // a completed read, the rows outside that span are still un-re-collected.
         revisionStale:
           !s.tape.polledAt ||
           now - Date.parse(s.tape.polledAt) > TAPE_RELABEL_INTERVAL * 3,
@@ -599,6 +712,7 @@ export class Monitor {
       ),
       connections: { gmgn: true, x: Boolean(process.env.X_BEARER_TOKEN) },
       freshForSeconds: 180,
+      gmgnPace: this.gmgnPace(),
     };
   }
 }

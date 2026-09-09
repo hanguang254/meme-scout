@@ -2,7 +2,14 @@ import http from 'node:http';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Monitor } from './monitor.mjs';
-import { discover, collect, fetchTape, resolveTape } from './providers.mjs';
+import {
+  discover,
+  collect,
+  fetchTape,
+  resolveTape,
+  cooldownUntil,
+  gmgnPace,
+} from './providers.mjs';
 import { openTapeSocket } from './tape-socket.mjs';
 const envFile = fileURLToPath(new URL('../.env.local', import.meta.url));
 if (fs.existsSync(envFile)) process.loadEnvFile(envFile);
@@ -12,6 +19,8 @@ const monitor = new Monitor({
   fetchTape,
   resolveTape,
   openTapeSocket,
+  gmgnCooldown: () => cooldownUntil('gmgn'),
+  gmgnPace,
 });
 // Only this machine's tabs subscribe; the bound cap keeps a runaway reloader
 // from holding an unbounded number of open responses.
@@ -100,6 +109,9 @@ export const server = http.createServer(async (req, res) => {
     const input = await body(req);
     if (url.pathname === '/api/monitor') {
       if (input.config) monitor.configure(input.config);
+      // Sort is applied on its own: it must not resume a paused monitor or
+      // count as a config change that discards the reports already collected.
+      if (input.sort !== undefined) monitor.setSort(input.sort);
       if (input.enabled === false) monitor.pause();
       else if (input.enabled === true || input.config) monitor.resume();
       return reply(res, 200, summary());

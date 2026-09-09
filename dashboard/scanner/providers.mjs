@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { CHAINS, number, validAddress } from './risk.mjs';
+import { millis } from './values.mjs';
 import { normalizeTape } from './tape.mjs';
 import {
   readRobinhoodContract,
@@ -18,6 +19,70 @@ const headers = {
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 const cooldowns = new Map();
 let gmgnQueue = Promise.resolve();
+// The scan loop paces itself against the GMGN limiter, so it has to be able to
+// read the cooldown instead of discovering it one failed token at a time.
+export const cooldownUntil = (key) => cooldowns.get(key) || 0;
+// A source that answers every request with the same refusal is not evidence and
+// is not worth a request per scan. After a run of failures it is left alone for
+// a while and reported as unavailable, so it can recover on its own.
+const BREAKER_TRIPS = 3;
+const BREAKER_PAUSE = 30 * 60000;
+const breakers = new Map();
+export function noteBreaker(key, ok, now = Date.now()) {
+  const b = breakers.get(key) || { failures: 0, until: 0 };
+  if (ok) breakers.set(key, { failures: 0, until: 0 });
+  else {
+    const failures = b.failures + 1;
+    breakers.set(key, {
+      failures,
+      until: failures >= BREAKER_TRIPS ? now + BREAKER_PAUSE : 0,
+    });
+  }
+  return breakers.get(key);
+}
+export const breakerOpenUntil = (key, now = Date.now()) => {
+  const until = breakers.get(key)?.until || 0;
+  return until > now ? until : 0;
+};
+export const resetBreakers = () => breakers.clear();
+// GMGN publishes no rate limit, so the pace is measured rather than guessed: a
+// minimum interval between call starts holds a real requests-per-minute figure
+// whatever the latency does, where a fixed sleep after each call would drift
+// with it. The first 429 is treated as the answer we could not look up and the
+// pace drops for the rest of the session — a limiter that keeps probing upward
+// would buy back a few seconds at the price of a five-minute blackout.
+const GMGN_RATE = 45;
+const GMGN_RATE_AFTER_LIMIT = 25;
+let gmgnRate = GMGN_RATE;
+let gmgnReducedAt = null;
+let lastGmgnCall = 0;
+export const gmgnPace = () => ({
+  target: GMGN_RATE,
+  current: gmgnRate,
+  reducedAt: gmgnReducedAt,
+});
+export function resetGmgnPace() {
+  gmgnRate = GMGN_RATE;
+  gmgnReducedAt = null;
+  lastGmgnCall = 0;
+  cooldowns.delete('gmgn');
+}
+// The pause and the slowdown come from the same event and are set together: a
+// limit that only paused would walk us straight back into it five minutes later.
+export function noteGmgnLimit(now = Date.now()) {
+  cooldowns.set('gmgn', now + 300000);
+  if (gmgnRate === GMGN_RATE_AFTER_LIMIT) return;
+  gmgnRate = GMGN_RATE_AFTER_LIMIT;
+  gmgnReducedAt = new Date(now).toISOString();
+}
+// Returns how long this call must wait, and books the slot it will take. Timed
+// from when the previous call started, so an answer that took longer than the
+// interval has already paid it rather than being charged twice.
+export function gmgnGate(now = Date.now()) {
+  const wait = Math.max(0, lastGmgnCall + 60000 / gmgnRate - now);
+  lastGmgnCall = now + wait;
+  return wait;
+}
 export function unwrap(raw) {
   if (raw?.code !== undefined) {
     if (![0, 1, '0', '1'].includes(raw.code))
@@ -31,7 +96,8 @@ export async function gmgn(args) {
     const until = cooldowns.get('gmgn') || 0;
     if (Date.now() < until)
       throw new Error(`GMGN 限流，${new Date(until).toISOString()} 后再试`);
-    await pause(350);
+    const wait = gmgnGate();
+    if (wait > 0) await pause(wait);
     try {
       const { stdout } = await exec(
         process.execPath,
@@ -50,14 +116,13 @@ export async function gmgn(args) {
         raw.code === 429 ||
         /RATE_LIMIT/.test(raw.reason || raw.message || '')
       ) {
-        cooldowns.set('gmgn', Date.now() + 300000);
+        noteGmgnLimit();
         throw new Error('GMGN 限流，已暂停请求 5 分钟');
       }
       return unwrap(raw);
     } catch (e) {
       const msg = String(e.stderr || e.message || '');
-      if (/429|RATE_LIMIT/.test(msg))
-        cooldowns.set('gmgn', Date.now() + 300000);
+      if (/429|RATE_LIMIT/.test(msg)) noteGmgnLimit();
       // Never expose CLI diagnostics that may contain authentication material.
       throw new Error(
         /429|RATE_LIMIT/.test(msg)
@@ -162,7 +227,7 @@ function gmgnCandidate(r, chain) {
     sellers: number(r.sells),
     source: 'GMGN 1h 热门',
     sourceUrl: `https://gmgn.ai/${chain}/token/${r.address}`,
-    createdAt: number(r.creation_timestamp),
+    createdAt: millis(r.creation_timestamp),
     trackedBuyers: null,
     trackedHolders: null,
     netFlow: null,
@@ -244,6 +309,7 @@ export async function resolveTape(trades) {
         volume: number(p?.volume?.h1),
         volumeWindow: '1h 主池',
         change: number(p?.priceChange?.h1),
+        createdAt: millis(p?.pairCreatedAt),
         buyers: null,
         sellers: null,
         trackedBuyers: null,
@@ -284,7 +350,7 @@ export async function discover(chain) {
         sellers: null,
         source: 'Robinhood Trenches · 1h 追踪钱包',
         sourceUrl: 'https://robinhoodtrenches.com',
-        createdAt: number(t.pair_created_at),
+        createdAt: millis(t.pair_created_at),
         trackedBuyers: number(t.buyers),
         trackedHolders: number(t.holders),
         netFlow: number(t.net_usd),
@@ -323,7 +389,7 @@ export async function discover(chain) {
         sellers: null,
         source: 'Robinhood Trenches Radar · 120min',
         sourceUrl: 'https://robinhoodtrenches.com',
-        createdAt: number(t.pair_created_at),
+        createdAt: millis(t.pair_created_at),
         trackedBuyers: null,
         trackedHolders: null,
         netFlow: null,
@@ -354,6 +420,9 @@ export async function discover(chain) {
           c.volume = number(p.volume?.h1);
           c.volumeWindow = '1h 主池';
           c.change = number(p.priceChange?.h1);
+          // Radar rows often omit pair_created_at; only fill the gap so the
+          // discovery source stays the one that reported the age.
+          c.createdAt ??= millis(p.pairCreatedAt);
           c.sourceUrl = p.url;
           c.pair = p;
           c.marketCapSource = 'DexScreener 最大流动性匹配池';
@@ -458,14 +527,61 @@ export async function fetchSocial(candidate) {
     return r;
   });
 }
-export async function collect(candidate, shouldContinue = () => true) {
+// Display order for the source list. Collection runs two groups concurrently,
+// so completion order is not an order anyone should read a report in.
+const SOURCE_ORDER = [
+  'info',
+  'security',
+  'holders',
+  'dev',
+  'goplus',
+  'explorer',
+  'contract',
+  'rugcheck',
+  'honeypot',
+  'social',
+];
+// Permission flags and a creator's launch history do not move on the timescale a
+// rescan runs at; price, market cap and holder concentration do. A rescan spends
+// its GMGN budget on the second group and carries the first one forward.
+export const SLOW_LANE = ['security', 'dev'];
+// Returns the earlier source entry to carry forward, or null to fetch again.
+// An entry that failed last time is not evidence and is never carried: the gap
+// has to stay visible rather than be inherited as a settled result.
+export function carriedSource(previous, key) {
+  if (!SLOW_LANE.includes(key)) return null;
+  if (previous?.raw?.[key] === undefined) return null;
+  const meta = previous.sources?.find((s) => s.key === key);
+  if (!meta || !['ok', 'partial'].includes(meta.status)) return null;
+  return { ...meta, data: previous.raw[key], reused: true };
+}
+export async function collect(
+  candidate,
+  shouldContinue = () => true,
+  previous = null,
+) {
   const { chain, address } = candidate;
   if (!validAddress(chain, address)) throw new Error('无效合约地址');
-  const results = [];
+  const slots = new Map();
   const data = {};
+  let gmgnCalls = 0;
+  const gmgnCall = (args) => {
+    gmgnCalls++;
+    return gmgn(args);
+  };
+  // Carried evidence keeps the fetchedAt of the request that actually produced
+  // it. The page prints that timestamp, so a reused finding never claims to
+  // have been checked now.
+  const carry = (key) => {
+    const kept = carriedSource(previous, key);
+    if (!kept) return false;
+    data[key] = kept.data;
+    slots.set(key, kept);
+    return true;
+  };
   const get = async (key, name, url, fn) => {
     if (!shouldContinue()) throw new Error('监控暂停或筛选已变化');
-    const r = await source(name, url, fn);
+    const r = { key, ...(await source(name, url, fn)) };
     if (key === 'goplus' && r.status === 'ok' && chain !== 'sol') {
       const important = [
         'is_mintable',
@@ -483,20 +599,51 @@ export async function collect(candidate, shouldContinue = () => true) {
         r.warning = `接口已返回，但 ${important.length - present.length}/${important.length} 个关键风险字段缺失${r.data.is_open_source === '0' ? '；GoPlus 未取得源码' : ''}${r.data.is_in_dex === '0' ? '；未识别可检测交易池' : ''}`;
       }
     }
-    results.push(r);
+    slots.set(key, r);
     if (['ok', 'partial'].includes(r.status)) data[key] = r.data;
     return r;
   };
+  const defer = (key, name, url) =>
+    slots.set(key, {
+      key,
+      name,
+      url,
+      status: 'deferred',
+      fetchedAt: new Date().toISOString(),
+      error: '首扫优先取得合约权限，本项留到下一轮补齐',
+      data: null,
+    });
   const gmgnUrl = `https://gmgn.ai/${chain}/token/${address}`;
-  await get('info', 'GMGN 基本信息', gmgnUrl, () =>
-    gmgn(['token', 'info', '--chain', chain, '--address', address]),
-  );
-  if (data.info?.symbol) {
-    await get('security', 'GMGN 合约', gmgnUrl, () =>
-      gmgn(['token', 'security', '--chain', chain, '--address', address]),
+  // A coin nobody has looked at yet gets the two calls that answer what people
+  // open this for — what the deployer can still do, and whether the position can
+  // be sold. Holder concentration and deployer history arrive on the next pass.
+  // Spending four calls on the first coin in the queue is why the last coin in
+  // the queue used to wait six minutes for anything at all; the two deferred
+  // rows read 未核验, which is what they are.
+  const first = !previous;
+  // The only genuinely serial chain: security and holders need info's symbol,
+  // dev needs the creator address info reports.
+  const gmgnLane = async () => {
+    await get('info', 'GMGN 基本信息', gmgnUrl, () =>
+      gmgnCall(['token', 'info', '--chain', chain, '--address', address]),
     );
+    if (!data.info?.symbol) return;
+    if (!carry('security'))
+      await get('security', 'GMGN 合约', gmgnUrl, () =>
+        gmgnCall(['token', 'security', '--chain', chain, '--address', address]),
+      );
+    const creator = data.info?.dev?.creator_address;
+    if (first) {
+      // Deferred, not failed, and not silently absent. Without an entry the
+      // report would fall back to "来源未返回该字段", blaming GMGN for a request
+      // we chose not to make yet.
+      defer('holders', 'GMGN 持有人', gmgnUrl);
+      if (validAddress(chain, creator))
+        defer('dev', 'GMGN 开发者', `https://gmgn.ai/${chain}/address/${creator}`);
+      return;
+    }
     await get('holders', 'GMGN 持有人', gmgnUrl, () =>
-      gmgn([
+      gmgnCall([
         'token',
         'holders',
         '--chain',
@@ -507,55 +654,85 @@ export async function collect(candidate, shouldContinue = () => true) {
         '30',
       ]),
     );
-    const creator = data.info?.dev?.creator_address;
-    if (validAddress(chain, creator))
-      await get(
-        'dev',
-        'GMGN 开发者',
-        `https://gmgn.ai/${chain}/address/${creator}`,
-        () =>
-          gmgn([
-            'portfolio',
-            'created-tokens',
-            '--chain',
-            chain,
-            '--wallet',
-            creator,
-          ]),
+    if (!validAddress(chain, creator)) return;
+    // A deployer cannot change, but carrying history collected for a different
+    // address would be a silent mismatch rather than a visible gap.
+    if (previous?.raw?.info?.dev?.creator_address === creator && carry('dev'))
+      return;
+    await get(
+      'dev',
+      'GMGN 开发者',
+      `https://gmgn.ai/${chain}/address/${creator}`,
+      () =>
+        gmgnCall([
+          'portfolio',
+          'created-tokens',
+          '--chain',
+          chain,
+          '--wallet',
+          creator,
+        ]),
+    );
+  };
+  // None of these depend on GMGN, so they run alongside it instead of queueing
+  // behind it. They stay serial among themselves: one request per host at a time.
+  const otherLane = async () => {
+    const gpUrl =
+      chain === 'sol'
+        ? `https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=${address}`
+        : `https://api.gopluslabs.io/api/v1/token_security/${CHAINS[chain].id}?contract_addresses=${address}`;
+    await get('goplus', 'GoPlus', gpUrl, async () => {
+      const raw = await json(gpUrl);
+      if (raw.code !== 1) throw new Error(`GoPlus 暂无数据（${raw.code}）`);
+      const d = raw.result?.[chain === 'sol' ? address : address.toLowerCase()];
+      if (!d || !Object.keys(d).length) throw new Error('GoPlus 未收录此代币');
+      return d;
+    });
+    if (chain === 'robinhood') {
+      const u = `${ROBINHOOD_EXPLORER}/api/v2/smart-contracts/${address}`;
+      const open = breakerOpenUntil('blockscout');
+      if (open)
+        slots.set('explorer', {
+          key: 'explorer',
+          name: 'Blockscout 合约结构',
+          url: u,
+          status: 'error',
+          fetchedAt: new Date().toISOString(),
+          error: `来源连续失败，暂停请求至 ${new Date(open).toISOString()}；代理与源码资料本次未取得`,
+          data: null,
+        });
+      else {
+        const r = await get('explorer', 'Blockscout 合约结构', u, async () =>
+          summarizeExplorer(await json(u), address),
+        );
+        noteBreaker('blockscout', r.status === 'ok');
+      }
+      await get('contract', 'Robinhood RPC 只读状态', ROBINHOOD_RPC, () =>
+        readRobinhoodContract(address, (url, body) => json(url, {}, body)),
       );
-  }
-  const gpUrl =
-    chain === 'sol'
-      ? `https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=${address}`
-      : `https://api.gopluslabs.io/api/v1/token_security/${CHAINS[chain].id}?contract_addresses=${address}`;
-  await get('goplus', 'GoPlus', gpUrl, async () => {
-    const raw = await json(gpUrl);
-    if (raw.code !== 1) throw new Error(`GoPlus 暂无数据（${raw.code}）`);
-    const d = raw.result?.[chain === 'sol' ? address : address.toLowerCase()];
-    if (!d || !Object.keys(d).length) throw new Error('GoPlus 未收录此代币');
-    return d;
-  });
-  if (chain === 'robinhood') {
-    const u = `${ROBINHOOD_EXPLORER}/api/v2/smart-contracts/${address}`;
-    await get('explorer', 'Blockscout 合约结构', u, async () =>
-      summarizeExplorer(await json(u), address),
-    );
-    await get('contract', 'Robinhood RPC 只读状态', ROBINHOOD_RPC, () =>
-      readRobinhoodContract(address, (url, body) => json(url, {}, body)),
-    );
-  }
-  if (chain === 'sol') {
-    const u = `https://api.rugcheck.xyz/v1/tokens/${address}/report`;
-    await get('rugcheck', 'RugCheck', u, () => json(u));
-  }
-  if (['eth', 'bsc', 'base'].includes(chain)) {
-    const u = `https://api.honeypot.is/v2/IsHoneypot?address=${address}&chainID=${CHAINS[chain].id}`;
-    await get('honeypot', 'Honeypot.is', u, () => json(u));
-  }
+    }
+    if (chain === 'sol') {
+      const u = `https://api.rugcheck.xyz/v1/tokens/${address}/report`;
+      await get('rugcheck', 'RugCheck', u, () => json(u));
+    }
+    if (['eth', 'bsc', 'base'].includes(chain)) {
+      const u = `https://api.honeypot.is/v2/IsHoneypot?address=${address}&chainID=${CHAINS[chain].id}`;
+      await get('honeypot', 'Honeypot.is', u, () => json(u));
+    }
+    if (!shouldContinue()) throw new Error('监控暂停或筛选已变化');
+    const x = await fetchSocial(candidate);
+    slots.set('social', { key: 'social', ...x });
+    if (x.status === 'ok') data.social = x.data;
+  };
+  // Settled, not raced: aborting on the first rejection would leave the other
+  // lane running with nobody holding its result or its failure.
+  const lanes = await Promise.allSettled([gmgnLane(), otherLane()]);
+  const failed = lanes.find((l) => l.status === 'rejected');
+  if (failed) throw failed.reason;
   if (chain === 'robinhood' && candidate.trench) data.trench = candidate.trench;
-  if (!shouldContinue()) throw new Error('监控暂停或筛选已变化');
-  const x = await fetchSocial(candidate);
-  results.push(x);
-  if (x.status === 'ok') data.social = x.data;
-  return { data, sources: results };
+  return {
+    data,
+    sources: SOURCE_ORDER.flatMap((k) => (slots.has(k) ? [slots.get(k)] : [])),
+    gmgnCalls,
+  };
 }

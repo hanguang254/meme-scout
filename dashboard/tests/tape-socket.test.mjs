@@ -39,6 +39,7 @@ class FakeSocket {
 function setup({ failOpen = false } = {}) {
   const sockets = [];
   const fills = [];
+  const labels = [];
   const hellos = [];
   const statuses = [];
   const socket = new TapeSocket({
@@ -49,11 +50,12 @@ function setup({ failOpen = false } = {}) {
       return ws;
     },
     onFills: (rows) => fills.push(rows),
+    onLabels: (map) => labels.push(map),
     onHello: (data) => hellos.push(data),
     onStatus: (s) => statuses.push(s),
     random: () => 0.5,
   });
-  return { socket, sockets, fills, hellos, statuses };
+  return { socket, sockets, fills, labels, hellos, statuses };
 }
 
 test('an accepted socket reports live, pings on the open socket and forwards fills', async (t) => {
@@ -125,6 +127,33 @@ test('a malformed frame does not drop a working socket', (t) => {
   assert.deepEqual(fills, [], '非数组载荷不应当作成交');
   sockets[0].deliver({ type: 'fills', data: [{ id: 7 }] });
   assert.deepEqual(fills, [[{ id: 7 }]]);
+  socket.stop();
+});
+
+test('label frames are forwarded, and only when they carry a map', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const { socket, sockets, labels, fills } = setup();
+  socket.start();
+  sockets[0].accept();
+
+  sockets[0].deliver({
+    type: 'labels',
+    data: { 67750: ['not a real buy (airdropped)'], 67754: [] },
+  });
+  assert.deepEqual(labels, [
+    { 67750: ['not a real buy (airdropped)'], 67754: [] },
+  ]);
+
+  // An array or a missing payload is not a label map; forwarding either would
+  // hand the monitor something it would read as "every row is clean".
+  sockets[0].deliver({ type: 'labels', data: [1, 2] });
+  sockets[0].deliver({ type: 'labels' });
+  sockets[0].deliver({ type: 'labels', data: null });
+  assert.equal(labels.length, 1, '非映射载荷不应当作标记修订');
+
+  sockets[0].deliver({ type: 'unknown-kind', data: { a: 1 } });
+  assert.equal(socket.status, 'live', '未知帧类型不应影响连接');
+  assert.deepEqual(fills, [], '标记帧不应被当作成交');
   socket.stop();
 });
 

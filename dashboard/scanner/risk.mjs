@@ -1,3 +1,6 @@
+import { buildProfileFindings } from './profile.mjs';
+import { arr, flag, fraction, number } from './values.mjs';
+export { flag, fraction, number } from './values.mjs';
 export const CHAINS = {
   sol: { label: 'Solana', dex: 'solana' },
   bsc: { label: 'BNB Chain', dex: 'bsc', id: 56 },
@@ -5,23 +8,6 @@ export const CHAINS = {
   eth: { label: 'Ethereum', dex: 'ethereum', id: 1 },
   robinhood: { label: 'Robinhood', dex: 'robinhood', id: 4663 },
 };
-export const number = (v) =>
-  !['number', 'string'].includes(typeof v) ||
-  (typeof v === 'string' && v.trim() === '') ||
-  !Number.isFinite(Number(v))
-    ? null
-    : Number(v);
-export function flag(v) {
-  return [true, 1, '1', 'true', 'yes'].includes(v)
-    ? true
-    : [false, 0, '0', 'false', 'no'].includes(v)
-      ? false
-      : null;
-}
-export function fraction(v) {
-  const n = number(v);
-  return n !== null && n >= 0 && n <= 1 ? n : null;
-}
 export function validAddress(chain, address) {
   if (!CHAINS[chain] || typeof address !== 'string') return false;
   if (chain !== 'sol') return /^0x[\da-fA-F]{40}$/.test(address);
@@ -49,9 +35,30 @@ export function selectCandidates(rows, config) {
   });
   return { selected, unknownCap };
 }
+export const SORTS = ['heat', 'new'];
+// `heat` is the order discovery already produced. `new` re-sorts by pool
+// creation time without inventing one for the rows that lack it: those keep the
+// index they held under `heat`, and only the dated rows compete for the slots
+// left between them. Nothing here reads the clock, so the order is stable
+// between polls and an absent timestamp never reads as brand new.
+export function orderCandidates(rows, sort) {
+  if (sort !== 'new') return rows;
+  const dated = [];
+  const pinned = new Map();
+  rows.forEach((row, index) => {
+    const at = number(row?.createdAt);
+    if (at === null) pinned.set(index, row);
+    else dated.push({ row, at, index });
+  });
+  if (!dated.length) return rows;
+  dated.sort((a, b) => b.at - a.at || a.index - b.index);
+  let next = 0;
+  return rows.map((_, index) =>
+    pinned.has(index) ? pinned.get(index) : dated[next++].row,
+  );
+}
 const pct = (v) => `${(v * 100).toFixed(1)}%`;
 const precisePct = (v) => (v === null ? '未知' : `${(v * 100).toFixed(2)}%`);
-const arr = (v) => (Array.isArray(v) ? v : []);
 const first = (...v) => v.find((x) => x !== null && x !== undefined);
 const combined = (...values) =>
   values.some((v) => v === true)
@@ -147,7 +154,9 @@ export function evaluateRisk(candidate, data, sources = []) {
   const privilege = (name) => (privileges.includes(name) ? true : null);
   const sourceError = (name) =>
     sources.find(
-      (s) => s.name === name && ['error', 'unconfigured'].includes(s.status),
+      (s) =>
+        s.name === name &&
+        ['error', 'unconfigured', 'deferred'].includes(s.status),
     )?.error;
   const missingContract = (id, title) => {
     if (id === 'sell-all' && flag(gp.is_in_dex) === false)
@@ -771,7 +780,9 @@ export function evaluateRisk(candidate, data, sources = []) {
           : 'info',
     '钱包分布',
     top10 === null
-      ? '未取得持仓样本'
+      ? sourceError('GMGN 持有人')
+        ? `未取得持仓样本：${sourceError('GMGN 持有人')}`
+        : '未取得持仓样本'
       : `返回样本中前 ${Math.min(measured.length, 10)} 个地址合计 ${pct(top10)}；排除 ${excluded.length} 个已标注池/销毁地址。其余地址可能仍含合约，样本不是全量持有人`,
     holderSource,
     top10,
@@ -884,7 +895,7 @@ export function evaluateRisk(candidate, data, sources = []) {
     '开发者发币历史',
     history.length
       ? `返回 ${history.length} 个历史代币${count !== null ? `，来源统计共 ${count} 个` : ''}；历史回撤不等于开发者作恶，未还原其全部交易`
-      : '未取得开发者历史；不能解释为无不良记录',
+      : `未取得开发者历史${sourceError('GMGN 开发者') ? `：${sourceError('GMGN 开发者')}` : ''}；不能解释为无不良记录`,
     'GMGN',
     count,
   );
@@ -905,6 +916,9 @@ export function evaluateRisk(candidate, data, sources = []) {
         : '未取得 X 原始帖子样本，讨论尚未核验',
     'X recent search',
   );
+  // Fields the sources already returned but nothing had parsed. These reuse the
+  // existing six groups, so the coverage denominator stays unchanged.
+  findings.push(...buildProfileFindings(data, candidate));
   const coverage = [
     'contract',
     'honeypot',

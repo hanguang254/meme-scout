@@ -312,6 +312,51 @@ button[data-slot='button'] {
 .list-subtitle span:last-child {
   color: #af9971;
 }
+/* Holds the sort switch inside the tab bar's own 43px row, so the bar keeps the
+   full-width bottom border it draws today. */
+.list-controls {
+  position: relative;
+}
+.sort-switch {
+  position: absolute;
+  right: 15px;
+  top: 0;
+  height: 43px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #7f96a3;
+}
+.sort-switch button {
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: #9cafbb;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sort-switch button:hover:not(:disabled) {
+  border-color: #45606e;
+  color: #cfe0e9;
+}
+.sort-switch button[aria-pressed='true'] {
+  border-color: #3c6f5e;
+  background: #1b2c29;
+  color: #84dbb9;
+}
+.sort-switch button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+@media (max-width: 760px) {
+  .sort-switch {
+    position: static;
+    height: auto;
+    padding: 8px 15px 0;
+  }
+}
 .market-tabs {
   padding: 0 15px !important;
   height: 44px !important;
@@ -1242,6 +1287,53 @@ output.tape-warning {
 .risk-unknown {
   margin-left: 8px;
   border-style: dashed;
+}
+.pill-tip-positioner {
+  z-index: 60;
+  max-width: min(460px, calc(100vw - 24px));
+}
+.pill-tip {
+  max-height: 62vh;
+  padding: 9px 11px;
+  overflow: hidden;
+  border: 1px solid #33414a;
+  border-radius: 6px;
+  background: #101a20;
+  box-shadow: 0 10px 26px rgb(0 0 0 / 45%);
+  color: #b3c4ce;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.pill-tip p {
+  margin: 0;
+}
+.pill-tip p + p {
+  margin-top: 5px;
+}
+.pill-tip-hint {
+  color: #8fa6b3;
+}
+.pill-tip-head {
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid #26333b;
+  font-weight: 600;
+}
+.pill-tip-head.critical,
+.pill-tip-head.high {
+  color: #f498a6;
+}
+.pill-tip-head.medium {
+  color: #ddbe7f;
+}
+.pill-tip-head.info {
+  color: #9ebfd4;
+}
+.pill-tip-head.pass {
+  color: #8cd4b5;
+}
+.pill-tip-head.unknown {
+  color: #9babb5;
 }
 .risk-stale-tag {
   margin-left: 8px;

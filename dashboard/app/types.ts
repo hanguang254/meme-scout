@@ -1,10 +1,14 @@
 export type Source = {
+  key?: string;
   name: string;
   url: string;
   status: string;
   error?: string;
   warning?: string;
   fetchedAt: string;
+  // Carried over from an earlier scan. fetchedAt is that scan's time, not this
+  // report's, and the row says so.
+  reused?: boolean;
 };
 export type TapeEvent = {
   id: string;
@@ -72,6 +76,10 @@ export type Candidate = {
   change: number | null;
   source: string;
   sourceUrl: string;
+  createdAt?: number | null;
+  rugRatio?: number | null;
+  buyers?: number | null;
+  sellers?: number | null;
   lastTrade?: TapeEvent;
   marketObservedAt?: string;
   trench?: {
@@ -153,9 +161,11 @@ export type Config = {
   maxCap: number;
   minLiquidity: number;
 };
+export type Sort = 'heat' | 'new';
 export type State = {
   enabled: boolean;
   config: Config;
+  sort: Sort;
   candidates: Candidate[];
   reports: Record<string, Report>;
   sources: Source[];
@@ -168,5 +178,12 @@ export type State = {
   total: number;
   connections: { gmgn: boolean; x: boolean };
   freshForSeconds: number;
+  // Present once the source has answered a request with a rate limit: the
+  // scanner then runs slower than `target` for the rest of the session.
+  gmgnPace?: {
+    target: number;
+    current: number;
+    reducedAt: string | null;
+  } | null;
   tape: Tape;
 };

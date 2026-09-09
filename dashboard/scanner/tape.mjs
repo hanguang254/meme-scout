@@ -2,10 +2,10 @@ import { number, flag, validAddress } from './risk.mjs';
 
 const text = (v, max = 160) => (typeof v === 'string' ? v.slice(0, max) : '');
 export const TAPE_INTERVAL = 5000;
-// With the socket live, new fills already arrive on their own. The reader stays
-// on the slower cadence purely to re-read the rows we already show: upstream
-// re-judges a fill's flags as later evidence lands, and only a full snapshot
-// carries those corrections.
+// With the socket live, new fills and re-judged flags both arrive on their own.
+// The reader stays on the slower cadence as the backstop: a pushed labels frame
+// speaks only for the ids upstream currently flags, so the rows we hold beyond
+// that span are re-collected by a full snapshot or not at all.
 export const TAPE_RELABEL_INTERVAL = 60000;
 export const LIVE_CANDIDATE_TTL = 15 * 60000;
 

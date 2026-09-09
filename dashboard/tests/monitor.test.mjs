@@ -61,3 +61,51 @@ test('invalid monitor settings do not replace current config', () => {
   assert.equal(m.state.config.chain, 'robinhood');
   m.pause();
 });
+test('changing the sort re-orders without discarding reports or re-discovering', async () => {
+  let discoveries = 0;
+  const rows = [
+    { ...candidate, id: 'sol:old', address: 'old', createdAt: 1000 },
+    { ...candidate, id: 'sol:new', address: 'new', createdAt: 9000 },
+  ];
+  const m = new Monitor({
+    discover: async () => {
+      discoveries++;
+      return { candidates: rows, sources: [{ name: 'GMGN 热门', status: 'ok' }] };
+    },
+    collect: async () => ({ data: {}, sources: [] }),
+    autoSchedule: false,
+  });
+  m.configure({
+    chain: 'sol',
+    minCap: 1000,
+    maxCap: 1e9,
+    minLiquidity: 1000,
+  });
+  await m.refresh();
+  const reports = { ...m.state.reports };
+  assert.deepEqual(
+    m.state.candidates.map((c) => c.id),
+    ['sol:old', 'sol:new'],
+  );
+  m.setSort('new');
+  assert.deepEqual(
+    m.state.candidates.map((c) => c.id),
+    ['sol:new', 'sol:old'],
+  );
+  // Unlike configure(), sorting must not cost a rescan of what is already known.
+  assert.equal(discoveries, 1);
+  assert.deepEqual(m.state.reports, reports);
+  assert.equal(m.state.sort, 'new');
+  m.setSort('heat');
+  assert.deepEqual(
+    m.state.candidates.map((c) => c.id),
+    ['sol:old', 'sol:new'],
+  );
+  assert.throws(() => m.setSort('cheapest'));
+  assert.equal(m.state.sort, 'heat');
+  // A filter change keeps the chosen order instead of silently resetting it.
+  m.setSort('new');
+  m.configure({ chain: 'sol', minCap: 2000, maxCap: 1e9, minLiquidity: 1000 });
+  assert.equal(m.state.sort, 'new');
+  m.pause();
+});

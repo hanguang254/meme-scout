@@ -1,9 +1,10 @@
 // rhtrenches pushes fills over a socket instead of waiting for the next poll.
 // Its own page falls back to a 5s REST read when that socket will not open, and
 // so does this monitor: a socket that never opens, or that keeps dying, must
-// never leave the tape frozen while it retries. The socket only carries new
-// fills, so the periodic full read stays — it is the only way upstream's later
-// re-judgement of a row's flags reaches us.
+// never leave the tape frozen while it retries. The same socket also carries
+// `labels` — upstream's later re-judgement of rows it already sent. The
+// periodic full read still stays, because a labels frame only speaks for the
+// span of ids upstream currently flags, not for the whole tape we hold.
 export const TAPE_WS_URL = 'wss://rhtrenches.com/ws';
 export const PING_INTERVAL = 20000;
 export const OPEN_TIMEOUT = 8000;
@@ -16,6 +17,7 @@ export class TapeSocket {
     url = TAPE_WS_URL,
     open = (target) => new WebSocket(target),
     onFills = () => {},
+    onLabels = () => {},
     onHello = () => {},
     onStatus = () => {},
     clock = Date.now,
@@ -24,6 +26,7 @@ export class TapeSocket {
     this.url = url;
     this.open = open;
     this.onFills = onFills;
+    this.onLabels = onLabels;
     this.onHello = onHello;
     this.onStatus = onStatus;
     this.clock = clock;
@@ -146,6 +149,13 @@ export class TapeSocket {
       }
       if (message?.type === 'fills' && Array.isArray(message.data))
         this.onFills(message.data);
+      else if (
+        message?.type === 'labels' &&
+        message.data &&
+        typeof message.data === 'object' &&
+        !Array.isArray(message.data)
+      )
+        this.onLabels(message.data);
       else if (message?.type === 'hello' && message.data)
         this.onHello(message.data);
     };
