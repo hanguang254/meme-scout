@@ -204,6 +204,12 @@ export type State = {
   total: number;
   connections: { gmgn: boolean; x: boolean };
   freshForSeconds: number;
+  // Stamped where the snapshot is built, so a smaller `rev` is always staler.
+  // The page drops those: pushes and request replies arrive on separate
+  // connections and not in the order they were produced. `boot` identifies the
+  // data service process, whose counter starts over when it restarts.
+  rev: number;
+  boot: string;
   // Present once the source has answered a request with a rate limit: the
   // scanner then runs slower than `target` for the rest of the session.
   gmgnPace?: {

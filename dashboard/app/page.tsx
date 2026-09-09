@@ -1,5 +1,5 @@
 'use client';
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { LiveTape } from './live-tape';
 import { RiskPills, RiskLegend } from './risk-pills';
 import { gmgnTokenUrl } from '@/lib/token-links';
@@ -165,6 +165,25 @@ function SourceList({ sources }: { sources: Source[] }) {
     </div>
   );
 }
+// True when `next` is newer than what the page already holds, and records it.
+// The stream and the request replies are separate connections, so the order
+// they are delivered in is not the order the service produced them in: a frame
+// flushed a moment before a chain switch can land after that switch's reply and
+// put the previous chain — its name and its whole candidate list — back on
+// screen, where it sits until the next push. `rev` is stamped where the
+// snapshot is built, so a smaller one is always staler and is dropped.
+// A different `boot` means the data service restarted and its counter began
+// again; that snapshot is taken on its own terms rather than compared against a
+// watermark from a process that no longer exists.
+const advance = (
+  seen: { current: { boot: string; rev: number } },
+  next: State,
+) => {
+  if (next.boot === seen.current.boot && next.rev <= seen.current.rev)
+    return false;
+  seen.current = { boot: next.boot, rev: next.rev };
+  return true;
+};
 export default function Home() {
   const [state, setState] = useState<State | null>(null),
     [selected, setSelected] = useState<string | null>(null),
@@ -175,6 +194,7 @@ export default function Home() {
     [saved, setSaved] = useState(false),
     [pending, setPending] = useState(false),
     [observedNow, setObservedNow] = useState(0);
+  const seen = useRef({ boot: '', rev: 0 });
   const pace = state?.gmgnPace;
   const marketAge = ageText(state?.market?.observedAt, observedNow);
   const [config, setConfig] = useState<Config>({
@@ -187,7 +207,7 @@ export default function Home() {
     let active = true;
     let timer: ReturnType<typeof setInterval> | null = null;
     const apply = (next: State) => {
-      if (!active) return;
+      if (!active || !advance(seen, next)) return;
       setState(next);
       setObservedNow(Date.now());
       setError('');
@@ -259,7 +279,10 @@ export default function Home() {
       });
       const data = (await r.json()) as State & { error?: string };
       if (!r.ok) throw new Error(data.error || '操作失败');
-      if (data.config) setState(data);
+      // Through the same watermark as the stream: this reply is the newest
+      // snapshot at the moment a switch is made, and letting it bypass the
+      // check would leave the stream free to overwrite it with an older one.
+      if (data.config && advance(seen, data)) setState(data);
       return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : '操作失败');

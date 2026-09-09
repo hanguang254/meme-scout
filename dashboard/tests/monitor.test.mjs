@@ -109,3 +109,46 @@ test('changing the sort re-orders without discarding reports or re-discovering',
   assert.equal(m.state.sort, 'new');
   m.pause();
 });
+
+// The page keeps a watermark and drops any snapshot whose `rev` does not beat
+// it, because the stream and the request replies arrive on separate connections
+// and not in the order they were produced. That rule is only safe if a snapshot
+// built later always carries a larger `rev` — otherwise a chain switch's reply
+// would be discarded instead of the stale frame it has to outrank.
+test('a snapshot built later always outranks one built earlier', () => {
+  const m = new Monitor({
+    discover: async () => good,
+    collect: async () => ({ data: {}, sources: [], gmgnCalls: 0 }),
+    autoSchedule: false,
+  });
+  // The frame the stream flushed a moment before the switch.
+  const before = m.summary();
+  m.configure({
+    chain: 'bsc',
+    minCap: 10000,
+    maxCap: 5000000,
+    minLiquidity: 5000,
+  });
+  // The reply the switch itself returns.
+  const after = m.summary();
+  assert.equal(before.config.chain, 'robinhood');
+  assert.equal(after.config.chain, 'bsc');
+  assert.ok(after.rev > before.rev, '切链后的快照必须比切链前的新');
+  assert.equal(after.boot, before.boot, '同一进程的 boot 不能变');
+  // Two snapshots of an unchanged state still order, so a reply can never tie
+  // with the frame it has to beat.
+  assert.ok(m.summary().rev > after.rev);
+  m.pause();
+});
+
+test('a restarted service is not mistaken for a stale frame', () => {
+  const old = new Monitor({ autoSchedule: false });
+  for (let i = 0; i < 5; i++) old.summary();
+  const held = old.summary();
+  // A fresh process counts from zero, so `rev` alone would have the page reject
+  // everything it sends, forever. `boot` is what tells the page to take it.
+  const fresh = new Monitor({ autoSchedule: false }).summary();
+  assert.ok(fresh.rev < held.rev);
+  assert.notEqual(fresh.boot, held.boot);
+  old.pause();
+});

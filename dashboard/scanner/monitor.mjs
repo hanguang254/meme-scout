@@ -125,6 +125,9 @@ export class Monitor {
     this.tapeTimer = null;
     this.marketPromise = null;
     this.marketTimer = null;
+    // Stamps every snapshot handed to a page. See summary() for why.
+    this.rev = 0;
+    this.boot = Math.random().toString(36).slice(2, 10);
     this.state = {
       enabled: true,
       config: {
@@ -839,6 +842,19 @@ export class Monitor {
       connections: { gmgn: true, x: Boolean(process.env.X_BEARER_TOKEN) },
       freshForSeconds: 180,
       gmgnPace: this.gmgnPace(),
+      // Every snapshot a page can receive is built right here, by reading the
+      // state at the moment of the call — so a larger `rev` always means
+      // newer-or-equal content. That is the whole ordering guarantee the page
+      // needs. It needs one because pushes and request replies travel on
+      // separate connections and are not delivered in the order they were
+      // produced: a frame flushed a moment before a chain switch can land
+      // after the switch's reply and put the previous chain's candidates back
+      // on screen, where they stay until the next push.
+      // `boot` changes when this process restarts, and the counter starts over
+      // with it. Without it a page holding a watermark from the old process
+      // would reject every frame from the new one, forever.
+      rev: ++this.rev,
+      boot: this.boot,
     };
   }
 }
