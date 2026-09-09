@@ -274,6 +274,87 @@ export async function fetchTape(previous = []) {
   });
 }
 
+// DexScreener needs no key and prices every chain this monitor watches, so the
+// live market numbers can be re-read far more often than discovery runs without
+// spending any of the GMGN budget. Its chain slugs are its own and do not match
+// the ids used everywhere else here, so the mapping is explicit.
+const DEX_CHAIN = {
+  robinhood: 'robinhood',
+  sol: 'solana',
+  bsc: 'bsc',
+  base: 'base',
+  eth: 'ethereum',
+};
+export const dexChain = (chain) => DEX_CHAIN[chain] ?? null;
+
+// One token trades in many pools. The deepest pool is the one a sale actually
+// meets, so that is the one quoted; the rest are dropped rather than summed,
+// because a total across pools is not a price anyone can trade at.
+function deepestPool(data, address, slug) {
+  const wanted = String(address).toLowerCase();
+  return rows(data)
+    .filter(
+      (p) =>
+        p.chainId === slug && p.baseToken?.address?.toLowerCase() === wanted,
+    )
+    .sort(
+      (a, b) =>
+        (number(b.liquidity?.usd) || 0) - (number(a.liquidity?.usd) || 0),
+    )[0];
+}
+
+// Windows the source did not report stay null. DexScreener omits priceChange.m5
+// and volume.m5 entirely when it has no trades to compare, and reading a missing
+// key as 0 would invent a flat market out of an absence of data.
+// marketCap and fdv are both kept: they are separate numbers whose difference is
+// non-circulating supply, and the source publishes neither the supply it used
+// nor why they differ, so neither one can stand in for the other.
+export function marketFields(p) {
+  return {
+    marketCap: number(p?.marketCap),
+    fdv: number(p?.fdv),
+    liquidity: number(p?.liquidity?.usd),
+    price: number(p?.priceUsd),
+    volume: number(p?.volume?.h1),
+    volumeWindow: '1h 主池',
+    volume5m: number(p?.volume?.m5),
+    change: number(p?.priceChange?.h1),
+    change5m: number(p?.priceChange?.m5),
+    buys5m: number(p?.txns?.m5?.buys),
+    sells5m: number(p?.txns?.m5?.sells),
+  };
+}
+
+// A price-only read for candidates already on the list. It never adds, removes
+// or reorders anything — discovery still owns membership; this only keeps the
+// numbers on screen from ageing between discovery runs.
+export async function quoteMarket(chain, addresses) {
+  const slug = dexChain(chain);
+  const sources = [];
+  const quotes = new Map();
+  if (!slug) return { quotes, sources };
+  const unique = [
+    ...new Set(addresses.filter(Boolean).map((a) => String(a).toLowerCase())),
+  ];
+  for (let i = 0; i < unique.length; i += 30) {
+    const batch = unique.slice(i, i + 30);
+    const url = `https://api.dexscreener.com/tokens/v1/${slug}/${batch.join(',')}`;
+    const s = await source('DexScreener 实时行情', url, () => json(url));
+    sources.push(s);
+    if (s.status !== 'ok') continue;
+    for (const address of batch) {
+      const p = deepestPool(s.data, address, slug);
+      if (p)
+        quotes.set(address, {
+          ...marketFields(p),
+          marketCapSource: 'DexScreener 最大流动性匹配池',
+          marketObservedAt: s.fetchedAt,
+        });
+    }
+  }
+  return { quotes, sources };
+}
+
 export async function resolveTape(trades) {
   const candidates = [],
     sources = [];
@@ -287,28 +368,14 @@ export async function resolveTape(trades) {
     sources.push(s);
     if (s.status !== 'ok') continue;
     for (const t of batch) {
-      const p = rows(s.data)
-        .filter(
-          (p) =>
-            p.chainId === 'robinhood' &&
-            p.baseToken?.address?.toLowerCase() === t.address,
-        )
-        .sort(
-          (a, b) =>
-            (number(b.liquidity?.usd) || 0) - (number(a.liquidity?.usd) || 0),
-        )[0];
+      const p = deepestPool(s.data, t.address, 'robinhood');
       candidates.push({
         id: t.candidateId,
         address: t.address,
         chain: 'robinhood',
         symbol: t.symbol,
         name: t.name,
-        marketCap: number(p?.marketCap),
-        liquidity: number(p?.liquidity?.usd),
-        price: number(p?.priceUsd),
-        volume: number(p?.volume?.h1),
-        volumeWindow: '1h 主池',
-        change: number(p?.priceChange?.h1),
+        ...marketFields(p),
         createdAt: millis(p?.pairCreatedAt),
         buyers: null,
         sellers: null,
@@ -402,30 +469,18 @@ export async function discover(chain) {
       const d = await source('DexScreener 市值', dexUrl, () => json(dexUrl));
       sources.push(d);
       for (const c of batch) {
-        const pools = rows(d.data)
-          .filter(
-            (p) =>
-              p.chainId === 'robinhood' &&
-              p.baseToken?.address?.toLowerCase() === c.address.toLowerCase(),
-          )
-          .sort(
-            (a, b) =>
-              (number(b.liquidity?.usd) || 0) - (number(a.liquidity?.usd) || 0),
-          );
-        const p = pools[0];
+        const p = deepestPool(d.data, c.address, 'robinhood');
         if (p) {
-          c.marketCap = number(p.marketCap);
-          c.liquidity = number(p.liquidity?.usd);
-          c.price = number(p.priceUsd);
-          c.volume = number(p.volume?.h1);
-          c.volumeWindow = '1h 主池';
-          c.change = number(p.priceChange?.h1);
+          Object.assign(c, marketFields(p));
           // Radar rows often omit pair_created_at; only fill the gap so the
           // discovery source stays the one that reported the age.
           c.createdAt ??= millis(p.pairCreatedAt);
           c.sourceUrl = p.url;
-          c.pair = p;
+          // The raw pool object used to be kept here and was never read. Now
+          // that the quote refreshes these fields on their own timer, keeping it
+          // would ship a second, older copy of every number to the page.
           c.marketCapSource = 'DexScreener 最大流动性匹配池';
+          c.marketObservedAt = d.fetchedAt;
         }
       }
     }

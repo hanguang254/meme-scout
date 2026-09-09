@@ -211,9 +211,12 @@ const slots: Slot[] = [
     key: 'depth',
     name: '流动性深度',
     Icon: Droplets,
-    hint: '这个图标：当前流动性深度（美元）。深度越浅，越少的卖单就能砸穿价格。',
+    hint: '这个图标：**核验那一刻**的流动性深度（美元），不是现在的值 —— 它随报告冻结，只在重扫时更新。表格里的 LP 每 15 秒重取，两个数对不上是正常的。深度越浅，越少的卖单就能砸穿价格。',
     ids: ['depth'],
-    value: (f) => compactUsd(f.get('depth')?.value) ?? '有深度',
+    value: (f) => {
+      const v = compactUsd(f.get('depth')?.value);
+      return v === null ? '有深度' : `核验 ${v}`;
+    },
   },
   {
     key: 'age',
@@ -234,7 +237,7 @@ const slots: Slot[] = [
     key: 'flow',
     name: '5 分钟盘面',
     Icon: Activity,
-    hint: '这个图标：最近 5 分钟的涨跌幅与买 / 卖笔数。来源只给窗口首尾两点，看不到期间的 K 线形态；行情不参与风险判级，只作观察。',
+    hint: '这个图标：**核验那一刻**往前 5 分钟的涨跌幅与买 / 卖笔数，随报告冻结，与表格里每 15 秒重取的 5m 行不是同一个时间点。来源只给窗口首尾两点，看不到期间的 K 线形态；行情不参与风险判级，只作观察。',
     ids: ['flow-5m'],
     value: (f) => {
       const v = record(f.get('flow-5m')?.value);
@@ -395,7 +398,7 @@ const slots: Slot[] = [
     key: 'visiting',
     name: 'GMGN 浏览数',
     Icon: Eye,
-    hint: '这个图标：来源站内的浏览计数。窗口多长、同一访客重复打开算不算一次，来源都没公布，所以不能读成「多少个人在看」。关注度不参与风险判级。',
+    hint: '这个图标：来源站内的浏览计数。它跟着报告走，只在该币重扫时更新（最长 3 分钟），不是实时计数。窗口多长、同一访客重复打开算不算一次，来源都没公布，所以不能读成「多少个人在看」。关注度不参与风险判级。',
     ids: ['visiting-count'],
     value: (f) => {
       const n = compact(record(f.get('visiting-count')?.value).visits);

@@ -64,6 +64,20 @@ const money = (n: number | null | undefined) =>
       }).format(n);
 const time = (s: string | null | undefined) =>
   s ? new Date(s).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
+// How far the live number has moved from the one the report was written against.
+// Null when either end is missing: a report with no market cap of its own has
+// nothing to compare, and showing 0% there would claim the price held still.
+const drift = (then: number | null | undefined, now: number | null | undefined) => {
+  if (then == null || now == null || then === 0) return null;
+  const d = ((now - then) / then) * 100;
+  return `${d > 0 ? '+' : ''}${d.toFixed(Math.abs(d) < 10 ? 1 : 0)}%`;
+};
+const ageText = (at: string | null | undefined, now: number) => {
+  const t = at ? Date.parse(at) : NaN;
+  if (!Number.isFinite(t)) return null;
+  const s = Math.max(0, Math.round((now - t) / 1000));
+  return s < 60 ? `${s} 秒前` : `${Math.round(s / 60)} 分钟前`;
+};
 const riskClass = (r?: Report) =>
   !r
     ? 'waiting'
@@ -138,6 +152,7 @@ export default function Home() {
     [pending, setPending] = useState(false),
     [observedNow, setObservedNow] = useState(0);
   const pace = state?.gmgnPace;
+  const marketAge = ageText(state?.market?.observedAt, observedNow);
   const [config, setConfig] = useState<Config>({
     chain: 'robinhood',
     minCap: 10000,
@@ -424,6 +439,20 @@ export default function Home() {
                   ? `下一轮 ${time(state.nextRefresh)}`
                   : '监控未启动'}
             </p>
+            {/* Two different clocks drive this page and conflating them is what
+                makes a stale number look live: discovery decides which coins are
+                listed once a minute, the quote only re-reads their prices. */}
+            <p
+              title={`市值、成交、流动性由 DexScreener 每 ${state?.market?.intervalSeconds ?? 15} 秒单独重取，不消耗 GMGN 额度，也不改变候选名单——名单仍由每 60 秒的发现决定。报告里的证据只在该币重扫时更新。`}
+            >
+              {state?.market?.supported === false
+                ? '实时行情：该链未接入'
+                : state?.market?.error
+                  ? `实时行情：${state.market.error}`
+                  : marketAge
+                    ? `行情 ${marketAge}（${state?.market?.quoted ?? 0} 个）`
+                    : '行情待首次读取'}
+            </p>
           </div>
         </div>
         {applied.chain === 'robinhood' && (
@@ -641,7 +670,23 @@ export default function Home() {
                             </span>
                             <span>
                               <strong>{c.symbol}</strong>
-                              <small>{money(c.marketCap)}</small>
+                              <small
+                                title={`实时市值 ${money(c.marketCap)}，取自 ${c.marketCapSource || c.source}${
+                                  marketAge ? `，${marketAge}读取` : ''
+                                }。完全稀释估值 ${money(c.fdv)}；两者的差是未计入流通的供应量，来源没有公布它用的流通量，也没有说明差在哪里，所以不能互相替代。`}
+                              >
+                                {money(c.marketCap)}
+                              </small>
+                              {r && (
+                                <small
+                                  className="cap-checked"
+                                  title={`这份报告是在市值 ${money(r.candidate.marketCap)} 时写的（${time(r.checkedAt)}）。上面的市值每 ${state?.market?.intervalSeconds ?? 15} 秒重取一次，报告只在重扫时更新，所以两个数不同是正常的。涨跌幅只是两次取值之间的差，不是风险判断。`}
+                                >
+                                  核验时 {money(r.candidate.marketCap)}
+                                  {drift(r.candidate.marketCap, c.marketCap) &&
+                                    ` ${drift(r.candidate.marketCap, c.marketCap)}`}
+                                </small>
+                              )}
                               {c.lastTrade && (
                                 <span
                                   className="live-candidate-label"
@@ -656,6 +701,17 @@ export default function Home() {
                         <TableCell>
                           <strong>{money(c.volume)}</strong>
                           <small>LP {money(c.liquidity)}</small>
+                          {(c.buys5m != null ||
+                            c.sells5m != null ||
+                            c.volume5m != null) && (
+                            <small
+                              className="flow-live"
+                              title={`最近 5 分钟：成交 ${money(c.volume5m)}，买 ${c.buys5m ?? '未知'} 笔 / 卖 ${c.sells5m ?? '未知'} 笔。与上面的成交额一样每 ${state?.market?.intervalSeconds ?? 15} 秒重取，是实时值；报告里的「5 分钟盘面」是上次重扫时的快照，两者会对不上。笔数不参与风险判级。`}
+                            >
+                              5m {money(c.volume5m)} 买
+                              {c.buys5m ?? '?'}/卖{c.sells5m ?? '?'}
+                            </small>
+                          )}
                         </TableCell>
                         <TableCell className="hide-narrow">
                           {c.trackedBuyers !== null ? (

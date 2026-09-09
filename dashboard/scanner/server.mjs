@@ -7,6 +7,7 @@ import {
   collect,
   fetchTape,
   resolveTape,
+  quoteMarket,
   cooldownUntil,
   gmgnPace,
 } from './providers.mjs';
@@ -18,6 +19,7 @@ const monitor = new Monitor({
   collect,
   fetchTape,
   resolveTape,
+  quoteMarket,
   openTapeSocket,
   gmgnCooldown: () => cooldownUntil('gmgn'),
   gmgnPace,

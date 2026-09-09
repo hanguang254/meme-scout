@@ -1123,6 +1123,16 @@ button[data-slot='button'] {
   color: #88c5ae;
   margin-top: 2px;
 }
+/* Deliberately dimmer than the live figure above it. These two lines hold the
+   same quantity at two different times, and the muted one is the older one. */
+.cap-checked,
+.flow-live {
+  display: block;
+  font: 500 9px var(--font-geist-mono);
+  color: #6f8892;
+  margin-top: 1px;
+  white-space: nowrap;
+}
 #candidate-workspace {
   scroll-margin-top: 18px;
 }

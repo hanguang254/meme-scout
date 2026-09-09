@@ -24,6 +24,12 @@ const NOTIFY_INTERVAL = 200;
 // floor exists for the other case: a scan that reached the rate-limited source
 // zero times must not let the loop spin.
 const MIN_SCAN_GAP = 1000;
+// Discovery runs once a minute because it is several sources deep and one of
+// them is rate limited. The market numbers it carries do not need that budget:
+// DexScreener takes no key, prices every chain watched here, and answers a whole
+// page of candidates in two requests. Quoting them on their own short timer
+// keeps the displayed price fresh without pulling the rest of discovery along.
+const MARKET_INTERVAL = 15000;
 // A first scan defers the checks that are not worth making the whole list wait
 // for, so its report is short a category on purpose. Waiting out the full
 // freshness window before filling those in would leave the loop idle with known
@@ -31,6 +37,16 @@ const MIN_SCAN_GAP = 1000;
 const incomplete = (report) =>
   (report?.sources || []).some((s) => s.status === 'deferred');
 const withoutData = ({ data: _data, ...meta }) => meta;
+const emptyMarket = () => ({
+  observedAt: null,
+  nextTick: null,
+  busy: false,
+  quoted: 0,
+  supported: true,
+  error: null,
+  sources: [],
+  intervalSeconds: MARKET_INTERVAL / 1000,
+});
 const emptyTape = () => ({
   events: [],
   source: null,
@@ -55,6 +71,7 @@ export class Monitor {
     collect,
     fetchTape,
     resolveTape,
+    quoteMarket = null,
     openTapeSocket = null,
     autoSchedule = true,
     clock = Date.now,
@@ -63,6 +80,7 @@ export class Monitor {
   }) {
     this.discover = discover;
     this.collect = collect;
+    this.quoteMarket = quoteMarket;
     this.gmgnCooldown = gmgnCooldown;
     this.gmgnPace = gmgnPace;
     this.autoSchedule = autoSchedule;
@@ -83,6 +101,8 @@ export class Monitor {
     this.tapePromise = null;
     this.resolvePromise = null;
     this.tapeTimer = null;
+    this.marketPromise = null;
+    this.marketTimer = null;
     this.state = {
       enabled: true,
       config: {
@@ -106,6 +126,7 @@ export class Monitor {
       total: 0,
       generation: 0,
       discoveryStale: false,
+      market: emptyMarket(),
       tape: emptyTape(),
     };
     this.refreshPromise = null;
@@ -137,7 +158,9 @@ export class Monitor {
     this.quoteAttempts.clear();
     this.liveIds.clear();
     this.scanAttempts.clear();
+    this.state.market = emptyMarket();
     this.state.tape = emptyTape();
+    clearTimeout(this.marketTimer);
     clearTimeout(this.tapeTimer);
     // The socket is bound to one chain's fills; a chain switch must drop it.
     this.stopTapeStream();
@@ -158,8 +181,10 @@ export class Monitor {
     this.state.generation++;
     clearTimeout(this.timer);
     clearTimeout(this.tapeTimer);
+    clearTimeout(this.marketTimer);
     this.stopTapeStream();
     this.state.nextRefresh = null;
+    this.state.market.nextTick = null;
     this.state.tape.nextPoll = null;
     this.push();
   }
@@ -171,6 +196,9 @@ export class Monitor {
     else void this.refresh();
     if (this.tapePromise) void this.tapePromise.then(() => this.pollTape());
     else void this.pollTape();
+    if (this.marketPromise)
+      void this.marketPromise.then(() => this.tickMarket());
+    else void this.tickMarket();
   }
   subscribe(listener) {
     this.listeners.add(listener);
@@ -517,6 +545,79 @@ export class Monitor {
       this.resolvePromise = null;
     }
   }
+  // Written as a replacement, never a mutation. Every stored report holds a
+  // reference to the candidate it was built from, so writing a new price through
+  // that object would silently rewrite the market cap the verdict was reached
+  // at — the one number that makes an old report readable.
+  applyQuotes(quotes) {
+    if (!quotes?.size) return 0;
+    const key = (c) => String(c.address).toLowerCase();
+    const merge = (c) => {
+      const q = quotes.get(key(c));
+      return q ? { ...c, ...q } : c;
+    };
+    this.baseCandidates = this.baseCandidates.map(merge);
+    this.state.candidates = this.state.candidates.map(merge);
+    return this.state.candidates.filter((c) => quotes.has(key(c))).length;
+  }
+  async tickMarket() {
+    if (!this.quoteMarket || this.marketPromise) return this.marketPromise;
+    const s = this.state;
+    if (!s.enabled) return;
+    clearTimeout(this.marketTimer);
+    const start = this.clock(),
+      generation = s.generation,
+      market = s.market;
+    const current = () => s.enabled && generation === s.generation;
+    const addresses = s.candidates.map((c) => c.address);
+    market.busy = true;
+    market.nextTick = null;
+    this.marketPromise = (async () => {
+      try {
+        if (!addresses.length) return;
+        const r = await this.quoteMarket(s.config.chain, addresses);
+        if (!current()) return;
+        market.sources = r.sources.map(withoutData);
+        // No batches at all means this chain has no quotable endpoint, which is
+        // a different thing from a chain whose requests failed.
+        if (!r.sources.length) {
+          market.supported = false;
+          market.error = null;
+          return;
+        }
+        market.supported = true;
+        const failed = r.sources.filter((x) => x.status !== 'ok');
+        market.quoted = this.applyQuotes(r.quotes);
+        // A tick that updated nothing must not stamp a fresh observation time:
+        // the age on screen would then be the age of the request rather than of
+        // the price, which is the one thing this timestamp exists to say.
+        if (market.quoted)
+          market.observedAt = new Date(this.clock()).toISOString();
+        market.error = failed.length
+          ? `实时行情 ${failed.length}/${r.sources.length} 批未取得：${failed[0].error || '来源错误'}`
+          : null;
+      } catch (e) {
+        if (current()) market.error = String(e.message).slice(0, 180);
+      } finally {
+        market.busy = false;
+        if (current() && this.autoSchedule) {
+          const delay = Math.max(
+            1000,
+            MARKET_INTERVAL - (this.clock() - start),
+          );
+          market.nextTick = new Date(this.clock() + delay).toISOString();
+          this.marketTimer = setTimeout(() => void this.tickMarket(), delay);
+          this.marketTimer?.unref?.();
+        }
+        this.push();
+      }
+    })();
+    try {
+      await this.marketPromise;
+    } finally {
+      this.marketPromise = null;
+    }
+  }
   async refresh() {
     if (this.refreshPromise) return this.refreshPromise;
     const start = this.clock();
@@ -549,6 +650,7 @@ export class Monitor {
         s.updatedAt = new Date(this.clock()).toISOString();
         s.discoveryStale = false;
         void this.scan();
+        void this.tickMarket();
       } catch (e) {
         s.error = String(e.message).slice(0, 200);
         s.discoveryStale = true;

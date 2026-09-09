@@ -69,11 +69,20 @@ export type Candidate = {
   symbol: string;
   name: string;
   marketCap: number | null;
+  // Fully diluted value. Its gap from marketCap is supply that is not counted as
+  // circulating; the source publishes neither the supply it used nor the reason
+  // they differ, so one can never be substituted for the other.
+  fdv?: number | null;
   liquidity: number | null;
   volume: number | null;
   volumeWindow: string;
+  volume5m?: number | null;
   price: number | null;
   change: number | null;
+  change5m?: number | null;
+  buys5m?: number | null;
+  sells5m?: number | null;
+  marketCapSource?: string;
   source: string;
   sourceUrl: string;
   createdAt?: number | null;
@@ -161,6 +170,19 @@ export type Config = {
   maxCap: number;
   minLiquidity: number;
 };
+// The price-only refresh that runs between discovery passes. It updates the
+// market numbers on candidates already listed and never changes which
+// candidates are listed — that stays with discovery.
+export type Market = {
+  observedAt: string | null;
+  nextTick: string | null;
+  busy: boolean;
+  quoted: number;
+  supported: boolean;
+  error: string | null;
+  sources: Source[];
+  intervalSeconds: number;
+};
 export type Sort = 'heat' | 'new';
 export type State = {
   enabled: boolean;
@@ -185,5 +207,6 @@ export type State = {
     current: number;
     reducedAt: string | null;
   } | null;
+  market: Market;
   tape: Tape;
 };
