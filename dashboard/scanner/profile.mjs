@@ -232,16 +232,18 @@ export function buildProfileFindings(data = {}, candidate = {}, now = Date.now()
   const renameLog = arr(info.dev?.twitter_name_change_history);
   const renames = renameLog.length || null;
   if (launches !== null || deletions !== null || renames !== null) {
-    // 5 and 10 are our lines, not the source's: GMGN publishes the count and no
-    // cutoff anywhere, so nothing here inherits a threshold from the data.
+    // 5 is our line, not the source's: GMGN publishes the count and no cutoff
+    // anywhere, so nothing here inherits a threshold from the data. It stops at
+    // yellow however high the count climbs — how many coins an account has
+    // launched is behaviour, not a defect detected in *this* coin, and red is
+    // kept for what a source actually found here (unsellable, mintable). A
+    // serial deployer is just as likely to be a team shipping a series.
     add(
       'dev-twitter',
       'dev',
-      launches !== null && launches >= 10
-        ? 'high'
-        : (launches !== null && launches >= 5) || deletions > 0 || renames
-          ? 'medium'
-          : 'info', // launches < 5, no deletions, no renames: an observation.
+      (launches !== null && launches >= 5) || deletions > 0 || renames
+        ? 'medium'
+        : 'info', // launches < 5, no deletions, no renames: an observation.
       '开发者推特',
       `${[
         launches !== null ? `同一个 X 账号发过 ${launches} 个币` : null,
@@ -252,7 +254,7 @@ export function buildProfileFindings(data = {}, candidate = {}, now = Date.now()
         xAccount ? `本币登记的账号是 @${xAccount.handle}` : null,
       ]
         .filter(Boolean)
-        .join('；')}。发币数 ≥5 标黄、≥10 标红，删推或改名一律标黄——这三条线是本机画的，来源只给计数、没有公布任何基准，也没说明计数含不含本币、统计了多长的时间窗口。连续发币、发完删推、频繁改名是批量发币和仿盘的常见做法，但同一团队的系列币、正常的账号改名，以及来源把不同账号误并成一个，都会计进同一个数字。这个标记是让你自己去看那个账号，不是对账号主人的认定`,
+        .join('；')}。发币数 ≥5 标黄，删推或改名一律标黄；发得再多也只标黄不标红——这两条线是本机画的，来源只给计数、没有公布任何基准，也没说明计数含不含本币、统计了多长的时间窗口。发币多少是账号的行为，不是这个币本身被检出的缺陷，所以红色留给来源明确检出的问题。连续发币、发完删推、频繁改名是批量发币和仿盘的常见做法，但同一团队的系列币、正常的账号改名，以及来源把不同账号误并成一个，都会计进同一个数字。这个标记是让你自己去看那个账号，不是对账号主人的认定`,
       'GMGN info.dev.twitter_* / info.link.twitter_username',
       {
         launched: launches,

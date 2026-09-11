@@ -280,19 +280,26 @@ test('the X handle is reduced to a first path segment and re-anchored to x.com',
   assert.equal(normalizeXAccount(null), null);
 });
 
-test('the developer-twitter mark grades on our own 5/10 lines and says so', () => {
+test('the developer-twitter mark tops out at yellow on our own line and says so', () => {
   const serial = find(
     at({ data: { info: { dev: { twitter_create_token_count: 12 } } } }),
     'dev-twitter',
   );
   assert.equal(serial.group, 'dev');
-  assert.equal(serial.severity, 'high');
+  // However high the count climbs it never turns red: a launch count is the
+  // account's behaviour, not a defect a source detected in this coin.
+  assert.equal(serial.severity, 'medium');
   assert.equal(serial.value.launched, 12);
   assert.match(serial.detail, /同一个 X 账号发过 12 个币/);
-  assert.match(serial.detail, /这三条线是本机画的/);
+  assert.match(serial.detail, /这两条线是本机画的/);
   assert.match(serial.detail, /不是对账号主人的认定/);
+  assert.equal(
+    find(at({ data: { info: { dev: { twitter_create_token_count: 400 } } } }), 'dev-twitter')
+      .severity,
+    'medium',
+  );
 
-  // 5–9 is yellow; deletions or renames are yellow on their own.
+  // 5 and up is yellow; deletions or renames are yellow on their own.
   assert.equal(
     find(at({ data: { info: { dev: { twitter_create_token_count: 6 } } } }), 'dev-twitter').severity,
     'medium',
@@ -355,7 +362,7 @@ test('the coin X account is exposed on the report but is not a finding in the so
   });
   const mark = find(report.findings, 'dev-twitter');
   assert.equal(mark.group, 'dev');
-  assert.equal(mark.severity, 'high');
+  assert.equal(mark.severity, 'medium');
   // First-time deployers have an account but no launch history, so the link
   // must survive the finding not being raised.
   const noHistory = evaluateRisk(
