@@ -1,6 +1,7 @@
 import {
   Activity,
   ArrowDownUp,
+  Bird,
   Bot,
   Clock,
   Droplets,
@@ -347,6 +348,21 @@ const slots: Slot[] = [
       const count = num(f.get('dev')?.value);
       if (count !== null) return `${count} 币`;
       return '有历史';
+    },
+  },
+  {
+    key: 'dev-twitter',
+    name: '开发者推特',
+    Icon: Bird,
+    hint: '这个图标：来源登记的开发者 X 账号发过多少个币、其中多少个发完删了推、账号改过几次名。发币 ≥5 标黄、≥10 标红是本页人为设定的分界线，来源只给计数不给基准；同一团队的系列币也会计进同一个数。',
+    ids: ['dev-twitter'],
+    value: (f) => {
+      const v = record(f.get('dev-twitter')?.value);
+      const launched = num(v.launched);
+      if (launched !== null) return `发 ${launched} 币`;
+      const renames = num(v.renames);
+      if (renames) return `改名 ${renames}`;
+      return num(v.deleted) ? '有删推' : '有账号';
     },
   },
   {

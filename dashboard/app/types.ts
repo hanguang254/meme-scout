@@ -120,6 +120,11 @@ export type Report = {
   // it. False also covers "no sell test was obtained", which is most of the
   // list — see the comment where this is computed in scanner/risk.mjs.
   unsellable?: boolean;
+  // The X account the source linked to this coin, normalised to a handle in
+  // scanner/profile.mjs so the page never builds a URL out of a source string.
+  // Null when the source linked none, or linked something that is not an
+  // x.com handle. Having one is not evidence of anything.
+  twitter?: { handle: string; url: string } | null;
   evidenceSummary?: { total: number; checked: number; unknown: number };
   checkedAt: string;
   candidate: Candidate;

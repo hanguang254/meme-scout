@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildProfileFindings, formatAge } from '../scanner/profile.mjs';
+import {
+  buildProfileFindings,
+  formatAge,
+  normalizeXAccount,
+} from '../scanner/profile.mjs';
 import { evaluateRisk } from '../scanner/risk.mjs';
 
 const NOW = Date.UTC(2026, 8, 8, 12, 0, 0);
@@ -248,6 +252,118 @@ test('the duplicate-image count is shown as a number and never graded', () => {
   // A high count is still not a risk grade: the source publishes no method.
   assert.equal(find(at({ data: { info: { image_dup_count: 900 } } }), 'image-dup').severity, 'info');
   assert.equal(find(at({ data: { info: { image_dup_count: 'x' } } }), 'image-dup'), undefined);
+});
+
+test('the X handle is reduced to a first path segment and re-anchored to x.com', () => {
+  // `token info` stores a bare handle, a status path, or a full URL. Every form
+  // collapses to the account, and the host is always x.com.
+  assert.deepEqual(normalizeXAccount('CoachPatNFT'), {
+    handle: 'CoachPatNFT',
+    url: 'https://x.com/CoachPatNFT',
+  });
+  assert.deepEqual(
+    normalizeXAccount('CoachPatNFT/status/2098253646836449314'),
+    { handle: 'CoachPatNFT', url: 'https://x.com/CoachPatNFT' },
+  );
+  assert.equal(
+    normalizeXAccount('https://twitter.com/Some_Dev/status/1').url,
+    'https://x.com/Some_Dev',
+  );
+  assert.equal(normalizeXAccount('@handle').url, 'https://x.com/handle');
+  // A crafted value can never choose the scheme or the host, and a segment that
+  // is not a valid handle is dropped rather than linked.
+  assert.equal(normalizeXAccount('javascript:alert(1)'), null);
+  assert.equal(normalizeXAccount('x.com.evil.com/victim'), null);
+  assert.equal(normalizeXAccount('has a space'), null);
+  assert.equal(normalizeXAccount('waytoolongtobeahandle123'), null);
+  assert.equal(normalizeXAccount(''), null);
+  assert.equal(normalizeXAccount(null), null);
+});
+
+test('the developer-twitter mark grades on our own 5/10 lines and says so', () => {
+  const serial = find(
+    at({ data: { info: { dev: { twitter_create_token_count: 12 } } } }),
+    'dev-twitter',
+  );
+  assert.equal(serial.group, 'dev');
+  assert.equal(serial.severity, 'high');
+  assert.equal(serial.value.launched, 12);
+  assert.match(serial.detail, /同一个 X 账号发过 12 个币/);
+  assert.match(serial.detail, /这三条线是本机画的/);
+  assert.match(serial.detail, /不是对账号主人的认定/);
+
+  // 5–9 is yellow; deletions or renames are yellow on their own.
+  assert.equal(
+    find(at({ data: { info: { dev: { twitter_create_token_count: 6 } } } }), 'dev-twitter').severity,
+    'medium',
+  );
+  assert.equal(
+    find(at({ data: { info: { dev: { twitter_del_post_token_count: 1 } } } }), 'dev-twitter').severity,
+    'medium',
+  );
+  const renamed = find(
+    at({
+      data: {
+        info: {
+          dev: {
+            twitter_create_token_count: 2,
+            twitter_name_change_history: ['a', 'b'],
+          },
+        },
+      },
+    }),
+    'dev-twitter',
+  );
+  assert.equal(renamed.severity, 'medium');
+  assert.equal(renamed.value.renames, 2);
+  assert.match(renamed.detail, /账号改过 2 次名/);
+
+  // A low, clean count stays an observation and carries the linked handle.
+  const clean = find(
+    at({
+      data: {
+        info: {
+          dev: { twitter_create_token_count: 1 },
+          link: { twitter_username: 'CoachPatNFT/status/9' },
+        },
+      },
+    }),
+    'dev-twitter',
+  );
+  assert.equal(clean.severity, 'info');
+  assert.equal(clean.value.handle, 'CoachPatNFT');
+  assert.match(clean.detail, /@CoachPatNFT/);
+
+  // No twitter fields at all: no mark, and it never lands in the social group.
+  assert.equal(find(at({ data: { info: { dev: {} } } }), 'dev-twitter'), undefined);
+});
+
+test('the coin X account is exposed on the report but is not a finding in the social group', () => {
+  const report = evaluateRisk(
+    { chain: 'sol', address: 'x' },
+    {
+      info: {
+        symbol: 'T',
+        link: { twitter_username: 'https://x.com/Proj_X/status/5' },
+        dev: { twitter_create_token_count: 11 },
+      },
+    },
+  );
+  assert.deepEqual(report.twitter, {
+    handle: 'Proj_X',
+    url: 'https://x.com/Proj_X',
+  });
+  const mark = find(report.findings, 'dev-twitter');
+  assert.equal(mark.group, 'dev');
+  assert.equal(mark.severity, 'high');
+  // First-time deployers have an account but no launch history, so the link
+  // must survive the finding not being raised.
+  const noHistory = evaluateRisk(
+    { chain: 'sol', address: 'y' },
+    { info: { symbol: 'T', link: { twitter_username: 'Fresh_One' } } },
+  );
+  assert.equal(noHistory.twitter.handle, 'Fresh_One');
+  assert.equal(find(noHistory.findings, 'dev-twitter'), undefined);
 });
 
 test('the new evidence joins the existing six groups without moving the coverage denominator', () => {

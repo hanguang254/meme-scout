@@ -41,6 +41,28 @@ const TAG_FIELDS = [
 ];
 const TAG_LABEL = new Map(TAG_FIELDS);
 
+// Turn the source's X field into a link we are willing to render. It arrives in
+// two shapes: `token info` stores a path ("CoachPatNFT/status/2098…", sometimes
+// pointing at one post rather than the account), while the discovery feed
+// returns a full URL. Both are reduced to the first path segment and re-anchored
+// to x.com, so the value decides *which account* and never the scheme or the
+// host — otherwise a crafted field would become a link the page hands the user.
+// The handle rules are X's own: 1–15 of [A-Za-z0-9_]. Anything else returns
+// null and the link is simply not drawn; failing closed costs one icon.
+export function normalizeXAccount(raw) {
+  if (typeof raw !== 'string') return null;
+  const handle = raw
+    .trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/^(?:www\.|mobile\.)?(?:x|twitter)\.com(?=\/)/i, '')
+    .replace(/^\/+/, '')
+    .replace(/^@/, '')
+    .split(/[/?#]/)[0];
+  return /^[A-Za-z0-9_]{1,15}$/.test(handle)
+    ? { handle, url: `https://x.com/${handle}` }
+    : null;
+}
+
 export function buildProfileFindings(data = {}, candidate = {}, now = Date.now()) {
   const findings = [];
   const add = (id, group, severity, title, detail, source, value = null) =>
@@ -189,6 +211,55 @@ export function buildProfileFindings(data = {}, candidate = {}, now = Date.now()
       {
         counts,
         sample: { size: sample.length, tags: Object.fromEntries(ranked) },
+      },
+    );
+  }
+
+  // What the creator's X account has done across launches, not that it exists.
+  // The source keys these three to the token's linked account: how many coins it
+  // has launched, how many of those had their posts deleted afterwards, and how
+  // many times it was renamed. `token info` already carries them, so this costs
+  // no request.
+  //
+  // Filed under `dev` and never `social`, for the reason spelled out at the view
+  // counter below: the social group's only real evidence is the post sample, and
+  // a launch counter must not be what marks "X 讨论" as covered.
+  const xAccount = normalizeXAccount(info.link?.twitter_username);
+  // A negative count is a source error, not an observation of fewer than zero.
+  const nonNeg = (v) => (v !== null && v >= 0 ? v : null);
+  const launches = nonNeg(number(info.dev?.twitter_create_token_count));
+  const deletions = nonNeg(number(info.dev?.twitter_del_post_token_count));
+  const renameLog = arr(info.dev?.twitter_name_change_history);
+  const renames = renameLog.length || null;
+  if (launches !== null || deletions !== null || renames !== null) {
+    // 5 and 10 are our lines, not the source's: GMGN publishes the count and no
+    // cutoff anywhere, so nothing here inherits a threshold from the data.
+    add(
+      'dev-twitter',
+      'dev',
+      launches !== null && launches >= 10
+        ? 'high'
+        : (launches !== null && launches >= 5) || deletions > 0 || renames
+          ? 'medium'
+          : 'info', // launches < 5, no deletions, no renames: an observation.
+      '开发者推特',
+      `${[
+        launches !== null ? `同一个 X 账号发过 ${launches} 个币` : null,
+        deletions !== null
+          ? `${launches !== null ? '其中 ' : ''}${deletions} 个发完删了推文`
+          : null,
+        renames ? `账号改过 ${renames} 次名` : null,
+        xAccount ? `本币登记的账号是 @${xAccount.handle}` : null,
+      ]
+        .filter(Boolean)
+        .join('；')}。发币数 ≥5 标黄、≥10 标红，删推或改名一律标黄——这三条线是本机画的，来源只给计数、没有公布任何基准，也没说明计数含不含本币、统计了多长的时间窗口。连续发币、发完删推、频繁改名是批量发币和仿盘的常见做法，但同一团队的系列币、正常的账号改名，以及来源把不同账号误并成一个，都会计进同一个数字。这个标记是让你自己去看那个账号，不是对账号主人的认定`,
+      'GMGN info.dev.twitter_* / info.link.twitter_username',
+      {
+        launched: launches,
+        deleted: deletions,
+        renames: renames ?? 0,
+        handle: xAccount?.handle ?? null,
+        history: renameLog.slice(0, 10),
       },
     );
   }

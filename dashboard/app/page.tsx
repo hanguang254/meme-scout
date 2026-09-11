@@ -20,6 +20,7 @@ import {
   Clock3,
   Eye,
   EyeOff,
+  Search,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -90,18 +91,17 @@ const ageText = (at: string | null | undefined, now: number) => {
   const s = Math.max(0, Math.round((now - t) / 1000));
   return s < 60 ? `${s} 秒前` : `${Math.round(s / 60)} 分钟前`;
 };
-// lucide dropped its brand marks, so the X logo is inlined. It is a link
-// affordance only — nothing on this row is read from X, and the search results
-// behind it are not evidence of anything.
-const XMark = ({ size = 11 }: { size?: number }) => (
-  <svg
-    viewBox="0 0 24 24"
-    width={size}
-    height={size}
-    fill="currentColor"
-    aria-hidden="true"
-  >
-    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+// Two separate icons sit by the name and they must not be confused. The
+// magnifying glass is a *search* on the contract address — always present,
+// finds nothing but whatever anyone happened to post. The X logo appears only
+// when the source linked an actual account to this coin, and it is drawn as the
+// brand mark precisely because it is that specific claim ("the source says this
+// coin's account is @handle"), not a generic search. Neither is evidence: the
+// tooltips say the search turns up nothing verified and the account is not
+// checked for being real or the owner's.
+const XLogo = () => (
+  <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden>
+    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24h-6.66l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
   </svg>
 );
 const riskClass = (r?: Report) =>
@@ -772,8 +772,21 @@ export default function Home() {
                                   title={`在 X 搜索合约地址 ${c.address}。搜到的帖子只是有人贴过这个地址，不是风险证据，也不代表真人讨论——发帖的可能是项目方、机器人或批量转发。数量多寡都不参与本页任何判级。`}
                                   aria-label={`在 X 搜索 ${c.symbol} 的合约地址`}
                                 >
-                                  <XMark />
+                                  <Search size={12} />
                                 </a>
+                                {r?.twitter && (
+                                  <a
+                                    className="x-account"
+                                    href={r.twitter.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                    title={`打开来源登记的 X 账号 @${r.twitter.handle}。这只是本币在来源里登记的账号，能不能打开、是不是本人、有没有被冒用，这里都没有核验；账号存在本身不是安全或真实的证据。开发者的发币/删推/改名记录看下方「开发者推特」标记。`}
+                                    aria-label={`打开 ${c.symbol} 登记的 X 账号 @${r.twitter.handle}`}
+                                  >
+                                    <XLogo />
+                                  </a>
+                                )}
                               </span>
                               <small
                                 title={`实时市值 ${money(c.marketCap)}，取自 ${c.marketCapSource || c.source}${

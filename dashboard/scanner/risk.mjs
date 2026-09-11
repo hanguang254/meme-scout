@@ -1,4 +1,4 @@
-import { buildProfileFindings } from './profile.mjs';
+import { buildProfileFindings, normalizeXAccount } from './profile.mjs';
 import { arr, flag, fraction, number } from './values.mjs';
 export { flag, fraction, number } from './values.mjs';
 export const CHAINS = {
@@ -956,10 +956,17 @@ export function evaluateRisk(candidate, data, sources = []) {
       (f.id === 'sell' && f.severity === 'critical') ||
       (f.id === 'sell-all' && f.value === true),
   );
+  // The account the source has linked to this coin, kept separate from the
+  // dev-twitter finding on purpose: a first-time deployer has an account but no
+  // launch history, so the link has to survive the finding not being raised. It
+  // is a way out to the account, not evidence — nothing on the row is read from
+  // it, and its presence says nothing about whether the account is real.
+  const twitter = normalizeXAccount(info.link?.twitter_username);
   return {
     verdict,
     coverage,
     unsellable,
+    twitter: twitter && { handle: twitter.handle, url: twitter.url },
     evidenceSummary: {
       total: findings.length,
       checked: findings.filter((f) => f.severity !== 'unknown').length,

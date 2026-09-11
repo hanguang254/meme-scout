@@ -493,6 +493,17 @@ button[data-slot='button'] {
 .x-search:hover {
   color: #cfe0e9;
 }
+/* The real account, so a touch brighter than the search — but still below the
+   name and well below the risk marks: a linked account is not a finding. */
+.x-account {
+  display: inline-flex;
+  flex: none;
+  line-height: 0;
+  color: #8aa2b3;
+}
+.x-account:hover {
+  color: #e8f0f5;
+}
 .candidate-table small {
   display: block;
   font-size: 12px;
