@@ -938,9 +938,28 @@ export function evaluateRisk(candidate, data, sources = []) {
         : findings.some((f) => f.severity === 'unknown')
           ? '证据不足'
           : '已查项未触发';
+  // Positive evidence that this coin cannot be sold, which the panel uses to
+  // drop it from the candidate list. Deliberately narrow: only a source that
+  // *reported* it counts.
+  // - `sell` is critical only when GoPlus, GMGN or Honeypot.is actually
+  //   answered honeypot / can_not_sell. Its `unknown` state means no usable
+  //   sell test was obtained at all — the common case, and the whole Robinhood
+  //   chain — and hiding those would turn "nobody checked" into "it fails".
+  // - `sell-all` carries the source's cannot_sell_all flag as its value, so a
+  //   detected `true` is read from the value rather than inferred from grading.
+  // Capabilities are not included: 可暂停转账 and 可修改税率 say the owner could
+  // stop a sale later, not that one fails now. They stay on the row as marks.
+  // This hides a coin; it never clears one. A list with these removed is still
+  // a list whose sell status is mostly unknown.
+  const unsellable = findings.some(
+    (f) =>
+      (f.id === 'sell' && f.severity === 'critical') ||
+      (f.id === 'sell-all' && f.value === true),
+  );
   return {
     verdict,
     coverage,
+    unsellable,
     evidenceSummary: {
       total: findings.length,
       checked: findings.filter((f) => f.severity !== 'unknown').length,

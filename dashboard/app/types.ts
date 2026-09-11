@@ -116,6 +116,10 @@ export type Finding = {
 export type Report = {
   verdict: string;
   coverage: number;
+  // A source reported that this coin cannot be sold. The candidate list drops
+  // it. False also covers "no sell test was obtained", which is most of the
+  // list — see the comment where this is computed in scanner/risk.mjs.
+  unsellable?: boolean;
   evidenceSummary?: { total: number; checked: number; unknown: number };
   checkedAt: string;
   candidate: Candidate;

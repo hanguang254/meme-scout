@@ -317,6 +317,32 @@ button[data-slot='button'] {
 .list-controls {
   position: relative;
 }
+/* Anchored to the sort switch rather than to the end of the tabs: the tabs grow
+   and shrink with their counts, the sort switch never does. */
+.hidden-toggle {
+  position: absolute;
+  right: 170px;
+  top: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: #9cafbb;
+  font-size: 12px;
+  cursor: pointer;
+}
+.hidden-toggle:hover {
+  border-color: #45606e;
+  color: #cfe0e9;
+}
+.hidden-toggle.is-open {
+  border-color: #7a4a4a;
+  background: #2a1c1c;
+  color: #e7a8a8;
+}
 .sort-switch {
   position: absolute;
   right: 15px;
@@ -355,6 +381,10 @@ button[data-slot='button'] {
     position: static;
     height: auto;
     padding: 8px 15px 0;
+  }
+  .hidden-toggle {
+    position: static;
+    margin: 8px 0 0 15px;
   }
 }
 .market-tabs {

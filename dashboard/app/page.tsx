@@ -18,6 +18,8 @@ import {
   Settings2,
   Activity,
   Clock3,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -190,6 +192,7 @@ export default function Home() {
     [error, setError] = useState(''),
     [filterOpen, setFilterOpen] = useState(false),
     [mode, setMode] = useState('all'),
+    [showHidden, setShowHidden] = useState(false),
     [xToken, setXToken] = useState(''),
     [saved, setSaved] = useState(false),
     [pending, setPending] = useState(false),
@@ -291,14 +294,23 @@ export default function Home() {
       setPending(false);
     }
   };
-  const rows = (state?.candidates || []).filter(
-    (c) =>
-      mode === 'all' ||
-      (mode === 'risk'
+  // Coins a source reported cannot be sold. They come out of 全部候选 — a coin
+  // you cannot exit is not a candidate — but not out of the panel: 高风险 still
+  // lists them, their reports and exports are untouched, and the scanner keeps
+  // rescanning them. Hiding is a listing decision, not a retired verdict.
+  const blocked = new Set(
+    (state?.candidates || [])
+      .filter((c) => state?.reports[c.id]?.unsellable)
+      .map((c) => c.id),
+  );
+  const rows = (state?.candidates || []).filter((c) =>
+    mode === 'all'
+      ? showHidden || !blocked.has(c.id)
+      : mode === 'risk'
         ? ['严重风险', '发现高风险'].includes(
             state?.reports[c.id]?.verdict || '',
           )
-        : !state?.reports[c.id]),
+        : !state?.reports[c.id],
   );
   const riskCount = Object.values(state?.reports || {}).filter((r) =>
     ['严重风险', '发现高风险'].includes(r.verdict),
@@ -629,7 +641,11 @@ export default function Home() {
             <Tabs value={mode} onValueChange={(v) => setMode(String(v))}>
               <TabsList variant="line" className="market-tabs">
                 <TabsTrigger value="all">
-                  全部候选<span>{state?.candidates.length || 0}</span>
+                  全部候选
+                  <span>
+                    {(state?.candidates.length || 0) -
+                      (showHidden ? 0 : blocked.size)}
+                  </span>
                 </TabsTrigger>
                 <TabsTrigger value="risk">
                   高风险<span>{riskCount}</span>
@@ -646,6 +662,20 @@ export default function Home() {
                 </TabsTrigger>
               </TabsList>
             </Tabs>
+            {blocked.size > 0 && (
+              <button
+                type="button"
+                className={`hidden-toggle${showHidden ? ' is-open' : ''}`}
+                onClick={() => setShowHidden(!showHidden)}
+                title={
+                  '这些币有来源明确报告无法卖出（貔貅 / 无法全部卖出），已从「全部候选」移出；「高风险」页签里仍然在，报告和导出都没有删。\n' +
+                  '这只是把检出的拿掉，不代表剩下的已验证可卖：榜上多数币的卖出检测是「未取得」。'
+                }
+              >
+                {showHidden ? <Eye size={12} /> : <EyeOff size={12} />}
+                {showHidden ? '收起' : '已隐藏'} {blocked.size} 个检出不可卖出
+              </button>
+            )}
             <div className="sort-switch">
               <span aria-hidden>排序</span>
               {(
@@ -909,12 +939,16 @@ export default function Home() {
                   ? '正在发现链上热门候选'
                   : mode === 'risk'
                     ? '当前没有已标出的高风险候选'
-                    : '当前筛选下没有候选'}
+                    : mode === 'all' && blocked.size > 0
+                      ? `当前候选全部检出不可卖出，已隐藏 ${blocked.size} 个`
+                      : '当前筛选下没有候选'}
               </h3>
               <p>
                 {mode === 'risk'
                   ? '未扫描、未知和数据缺失都不能视为安全。'
-                  : '榜单自动更新。可调整市值 / 流动性范围，或切换监控链。'}
+                  : mode === 'all' && blocked.size > 0
+                    ? '点上方的「已隐藏」可以展开查看，它们也在「高风险」页签里。'
+                    : '榜单自动更新。可调整市值 / 流动性范围，或切换监控链。'}
               </p>
             </div>
           )}

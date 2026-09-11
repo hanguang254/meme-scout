@@ -148,3 +148,44 @@ test('integer honeypot and sell-restriction positives are never erased by zero c
     'unknown',
   );
 });
+
+// The panel drops a candidate from 热门候选 when this flag is set, so what it
+// must never do is fire on a coin nobody managed to test.
+test('an unsellable coin is flagged only when a source actually reported it', () => {
+  const sold = (data) => evaluateRisk(candidate, data).unsellable;
+
+  // Nothing obtained: the common case, and every Robinhood coin, since no
+  // independent sell simulation is wired up for that chain.
+  assert.equal(sold({}), false, '未取得卖出检测不能当成卖不出去');
+  assert.equal(sold({ goplus: { is_honeypot: '0' } }), false);
+  assert.equal(
+    sold({ honeypot: { simulationSuccess: false } }),
+    false,
+    '模拟失败只是没结论，不是已检出',
+  );
+
+  // A capability the owner holds is not a sale that fails today.
+  assert.equal(
+    sold({ security: { privileges: ['pausable'] }, goplus: { slippage_modifiable: '1' } }),
+    false,
+    '可暂停转账、可修改税率是能力，不是当前不可卖',
+  );
+
+  // Each source that can report it, on its own.
+  assert.equal(sold({ goplus: { is_honeypot: '1' } }), true);
+  assert.equal(sold({ security: { can_not_sell: 1 } }), true);
+  assert.equal(
+    sold({ honeypot: { simulationSuccess: true, honeypotResult: { isHoneypot: true } } }),
+    true,
+  );
+  assert.equal(sold({ goplus: { cannot_sell_all: '1' } }), true);
+
+  // A conflict is not a clearance: one source reporting it is enough to hide,
+  // and the row keeps both sides of the conflict in its evidence.
+  const conflict = evaluateRisk(candidate, {
+    goplus: { is_honeypot: '1' },
+    honeypot: { simulationSuccess: true, honeypotResult: { isHoneypot: false } },
+  });
+  assert.equal(conflict.unsellable, true, '冲突时不能按未检出那一方放行');
+  assert.ok(find(conflict, 'sell-conflict'), '隐藏之后证据里仍要留着冲突');
+});
