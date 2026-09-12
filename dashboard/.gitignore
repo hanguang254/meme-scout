@@ -30,6 +30,10 @@ yarn-error.log*
 .env*
 !.env.example
 
+# the tracked-address list: which wallets you follow and what you call them is
+# the private half of this tool. Only the example shape is committed.
+/watchlist.json
+
 # deployment and generated files
 .vercel
 next-env.d.ts

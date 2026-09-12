@@ -38,6 +38,12 @@ const MIN_SCAN_GAP = 1000;
 // 15. Two batches per tick for a full page is 20 requests a minute against a
 // ~300/min allowance.
 const MARKET_INTERVAL = 6000;
+// The tracked-address sweep is pure RPC and spends none of the GMGN budget, so
+// its cadence is set by what the answer is worth rather than by a limiter. A
+// balance changes when someone trades, which for these coins is far slower than
+// the price ticks — and the whole sweep is a handful of requests, so 20 seconds
+// keeps it well under one request per second even with a full list.
+const TRACKED_INTERVAL = 20000;
 // A first scan defers the checks that are not worth making the whole list wait
 // for, so its report is short a category on purpose. Waiting out the full
 // freshness window before filling those in would leave the loop idle with known
@@ -69,6 +75,22 @@ const emptyMarket = () => ({
   sources: [],
   intervalSeconds: MARKET_INTERVAL / 1000,
 });
+const emptyTracked = () => ({
+  supported: true,
+  block: null,
+  rpc: null,
+  observedAt: null,
+  nextTick: null,
+  busy: false,
+  // How many addresses the last sweep actually covered. Compared against the
+  // list's length so a freshly added address cannot be mistaken for one that was
+  // checked and found holding nothing.
+  swept: 0,
+  requests: 0,
+  error: null,
+  byCandidate: {},
+  intervalSeconds: TRACKED_INTERVAL / 1000,
+});
 const emptyTape = () => ({
   events: [],
   source: null,
@@ -95,6 +117,8 @@ export class Monitor {
     resolveTape,
     quoteMarket = null,
     openTapeSocket = null,
+    readTracked = null,
+    watchlist = null,
     autoSchedule = true,
     clock = Date.now,
     gmgnCooldown = () => 0,
@@ -103,6 +127,8 @@ export class Monitor {
     this.discover = discover;
     this.collect = collect;
     this.quoteMarket = quoteMarket;
+    this.readTracked = readTracked;
+    this.watchlist = watchlist;
     this.gmgnCooldown = gmgnCooldown;
     this.gmgnPace = gmgnPace;
     this.autoSchedule = autoSchedule;
@@ -125,6 +151,11 @@ export class Monitor {
     this.tapeTimer = null;
     this.marketPromise = null;
     this.marketTimer = null;
+    this.trackedPromise = null;
+    this.trackedTimer = null;
+    // ERC-20 decimals cannot change, so one read per token lasts as long as the
+    // token is on the list.
+    this.trackedDecimals = new Map();
     // Stamps every snapshot handed to a page. See summary() for why.
     this.rev = 0;
     this.boot = Math.random().toString(36).slice(2, 10);
@@ -153,6 +184,7 @@ export class Monitor {
       discoveryStale: false,
       market: emptyMarket(),
       tape: emptyTape(),
+      tracked: emptyTracked(),
     };
     this.refreshPromise = null;
     this.scanPromise = null;
@@ -185,7 +217,12 @@ export class Monitor {
     this.scanAttempts.clear();
     this.state.market = emptyMarket();
     this.state.tape = emptyTape();
+    // Balances belong to the chain they were read on, and a token id is
+    // chain-scoped, so a chain switch invalidates every one of them.
+    this.state.tracked = emptyTracked();
+    this.trackedDecimals.clear();
     clearTimeout(this.marketTimer);
+    clearTimeout(this.trackedTimer);
     clearTimeout(this.tapeTimer);
     // The socket is bound to one chain's fills; a chain switch must drop it.
     this.stopTapeStream();
@@ -207,9 +244,11 @@ export class Monitor {
     clearTimeout(this.timer);
     clearTimeout(this.tapeTimer);
     clearTimeout(this.marketTimer);
+    clearTimeout(this.trackedTimer);
     this.stopTapeStream();
     this.state.nextRefresh = null;
     this.state.market.nextTick = null;
+    this.state.tracked.nextTick = null;
     this.state.tape.nextPoll = null;
     this.push();
   }
@@ -224,6 +263,16 @@ export class Monitor {
     if (this.marketPromise)
       void this.marketPromise.then(() => this.tickMarket());
     else void this.tickMarket();
+    this.refreshTracked();
+  }
+  // Editing the list takes effect now rather than at the next tick: hot-reloading
+  // the file is only worth anything if using the edit does not mean waiting.
+  refreshTracked() {
+    clearTimeout(this.trackedTimer);
+    this.state.tracked.nextTick = null;
+    if (this.trackedPromise)
+      void this.trackedPromise.then(() => this.tickTracked());
+    else void this.tickTracked();
   }
   subscribe(listener) {
     this.listeners.add(listener);
@@ -643,6 +692,130 @@ export class Monitor {
       this.marketPromise = null;
     }
   }
+  async tickTracked() {
+    if (!this.readTracked || this.trackedPromise) return this.trackedPromise;
+    const s = this.state;
+    if (!s.enabled) return;
+    clearTimeout(this.trackedTimer);
+    const start = this.clock(),
+      generation = s.generation,
+      tracked = s.tracked;
+    const current = () => s.enabled && generation === s.generation;
+    const wallets = (this.watchlist?.state.entries || []).map((e) => e.address);
+    const tokens = s.candidates.map((c) => ({ id: c.id, address: c.address }));
+    tracked.busy = true;
+    tracked.nextTick = null;
+    this.trackedPromise = (async () => {
+      try {
+        if (!wallets.length || !tokens.length) {
+          tracked.error = null;
+          return;
+        }
+        const r = await this.readTracked({
+          chain: s.config.chain,
+          tokens,
+          wallets,
+          decimals: this.trackedDecimals,
+        });
+        if (!current()) return;
+        tracked.supported = true;
+        tracked.rpc = r.rpc;
+        tracked.block = r.block;
+        tracked.swept = r.wallets;
+        tracked.requests = r.requests;
+        tracked.observedAt = r.observedAt;
+        // Whole-sweep replacement. A coin that dropped off the list keeps no
+        // stale row, and a coin that arrived has none until it is read.
+        tracked.byCandidate = r.tokens;
+        tracked.error = r.failedChunks
+          ? `${r.failedChunks} 批余额未取得，相关地址按未核验计：${r.error}`
+          : null;
+      } catch (e) {
+        if (!current()) return;
+        const message = String(e.message).slice(0, 180);
+        // A chain with no endpoint configured is not a chain whose read failed.
+        // The page says so differently, because one of them is a thing to go fix
+        // and the other is a thing to wait out.
+        tracked.supported = !/未配置|不支持|没有 Multicall3/.test(message);
+        tracked.error = message;
+      } finally {
+        tracked.busy = false;
+        if (current() && this.autoSchedule) {
+          const delay = Math.max(
+            2000,
+            TRACKED_INTERVAL - (this.clock() - start),
+          );
+          tracked.nextTick = new Date(this.clock() + delay).toISOString();
+          this.trackedTimer = setTimeout(() => void this.tickTracked(), delay);
+          this.trackedTimer?.unref?.();
+        }
+        this.push();
+      }
+    })();
+    try {
+      await this.trackedPromise;
+    } finally {
+      this.trackedPromise = null;
+    }
+  }
+  // Balances are stored against addresses; the notes are joined on here, every
+  // time a snapshot is built. So renaming an address shows up on the next push
+  // without re-reading anything, and deleting one stops it counting at once
+  // rather than at the next sweep.
+  trackedSummary(now) {
+    const s = this.state,
+      t = s.tracked;
+    const list = this.watchlist?.state || null;
+    const entries = new Map((list?.entries || []).map((e) => [e.address, e]));
+    const byCandidate = {};
+    for (const c of s.candidates) {
+      const row = t.byCandidate[c.id];
+      if (!row) continue;
+      const price = number(c.price);
+      const decimals = this.trackedDecimals.get(c.id);
+      const hits = row.hits
+        .filter((h) => entries.has(h.wallet))
+        .map((h) => {
+          const e = entries.get(h.wallet);
+          // Float division is fine here and only here: the raw integer is what
+          // was read, and this is the approximate size shown beside a name.
+          const amount =
+            decimals === undefined ? null : Number(h.raw) / 10 ** decimals;
+          return {
+            address: e.address,
+            note: e.note,
+            emoji: e.emoji,
+            amount,
+            usd: amount !== null && price !== null ? amount * price : null,
+          };
+        })
+        .sort((a, b) => (b.usd ?? -1) - (a.usd ?? -1));
+      byCandidate[c.id] = {
+        count: hits.length,
+        hits,
+        unknown: row.unknown,
+        status: row.status,
+      };
+    }
+    return {
+      ...t,
+      byCandidate,
+      // The file exists and parsed into at least one address. Without that the
+      // column shows "未配置" rather than a column of zeroes.
+      configured: Boolean(list?.present && entries.size),
+      wallets: entries.size,
+      listError: list?.error || null,
+      listLoadedAt: list?.loadedAt || null,
+      listSkipped: (list?.skipped || []).slice(0, 12),
+      listSkippedTotal: (list?.skipped || []).length,
+      // The list moved since the sweep that produced these numbers. A re-sweep
+      // is already queued; until it lands the counts speak for the old list.
+      pending: Boolean(t.observedAt) && t.swept !== entries.size,
+      stale:
+        Boolean(t.observedAt) &&
+        now - Date.parse(t.observedAt) > TRACKED_INTERVAL * 3,
+    };
+  }
   async refresh() {
     if (this.refreshPromise) return this.refreshPromise;
     const start = this.clock();
@@ -834,6 +1007,7 @@ export class Monitor {
           return { ...t, reason };
         }),
       },
+      tracked: this.trackedSummary(now),
       reports: Object.fromEntries(
         Object.entries(this.state.reports)
           .filter(([key]) => candidateIds.has(key))

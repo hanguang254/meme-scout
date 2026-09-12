@@ -515,6 +515,44 @@ button[data-slot='button'] {
   font-weight: 550;
   font-variant-numeric: tabular-nums;
 }
+/* Matches the other numeric cells rather than inventing its own type, so the
+   count reads as one more column of the same table. The wrapper exists only to
+   give the hover one target covering both lines. */
+.tracked-cell {
+  display: block;
+  cursor: help;
+}
+.tracked-cell > strong {
+  font-size: 14px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+.tracked-cell > small {
+  display: block;
+  font-size: 12px;
+  color: #7f96a2;
+  margin-top: 4px;
+  max-width: 15ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A hit is the whole point of the column, so it is the only state with colour —
+   and deliberately the same green as "来源明确返回未触发" rather than a new one,
+   because it means the same kind of thing: a source answered. */
+.tracked-cell.hit > strong {
+  color: #7fc8a3;
+}
+/* Grey for both "not checked" and "checked, nobody holds it". They read
+   differently in the second line and on the hover, never by colour: nothing
+   here should look like a verdict. */
+.tracked-cell.unknown > strong,
+.tracked-cell.muted > strong {
+  color: #93a8b2;
+}
+.tracked-cell.is-stale {
+  opacity: 0.72;
+}
 .rank {
   font-size: 12px;
   color: #647d8a;
@@ -1434,6 +1472,12 @@ output.tape-warning {
   color: #8cd4b5;
 }
 .pill-tip-head.unknown {
+  color: #9babb5;
+}
+.pill-tip-head.hit {
+  color: #8cd4b5;
+}
+.pill-tip-head.muted {
   color: #9babb5;
 }
 .risk-stale-tag {

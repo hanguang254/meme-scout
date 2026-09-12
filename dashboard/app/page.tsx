@@ -2,6 +2,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { LiveTape } from './live-tape';
 import { RiskPills, RiskLegend } from './risk-pills';
+import { TrackedCell } from './tracked-cell';
 import { gmgnTokenUrl } from '@/lib/token-links';
 import {
   Radar,
@@ -714,6 +715,7 @@ export default function Home() {
                   <TableHead>成交 / 流动性</TableHead>
                   <TableHead className="hide-narrow">热度</TableHead>
                   <TableHead>排雷结论</TableHead>
+                  <TableHead>追踪地址</TableHead>
                   <TableHead className="sr-only">操作</TableHead>
                 </TableRow>
               </TableHeader>
@@ -901,6 +903,9 @@ export default function Home() {
                               : '尚未判定风险'}
                           </small>
                         </TableCell>
+                        <TableCell>
+                          <TrackedCell tracked={state?.tracked} id={c.id} />
+                        </TableCell>
                         <TableCell className="row-actions">
                           <a
                             href={safeUrl(gmgnTokenUrl(c.chain, c.address))}
@@ -929,7 +934,7 @@ export default function Home() {
                         className={`risk-strip-row${sel}`}
                         onClick={() => setSelected(c.id)}
                       >
-                        <TableCell colSpan={5}>
+                        <TableCell colSpan={6}>
                           <RiskPills
                             report={r}
                             scanning={state?.scanning === c.id}

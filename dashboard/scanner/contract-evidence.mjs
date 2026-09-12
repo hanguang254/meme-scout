@@ -28,7 +28,7 @@ export function identifyMinimalClone(code) {
   return null;
 }
 
-function responseFor(rows, id) {
+export function responseFor(rows, id) {
   if (!Array.isArray(rows)) throw new Error('RPC 批量响应格式无效');
   const row = rows.find((r) => r.id === id);
   if (!row || row.error) throw new Error(row?.error?.message || 'RPC 缺少响应');

@@ -10,6 +10,7 @@ import {
   ROBINHOOD_RPC,
   ROBINHOOD_EXPLORER,
 } from './contract-evidence.mjs';
+import { readTrackedHoldings } from './tracked-balances.mjs';
 const exec = promisify(execFile);
 const binary = fileURLToPath(new URL('./gmgn-runner.mjs', import.meta.url));
 const headers = {
@@ -353,6 +354,19 @@ export async function quoteMarket(chain, addresses) {
     }
   }
   return { quotes, sources };
+}
+
+// The tracked-address lane's only door to the network. It spends no GMGN budget
+// at all — this is a plain RPC read, so it can run on its own short cycle
+// without competing with the scan loop for the rate limit that matters.
+export function readTracked({ chain, tokens, wallets, decimals }) {
+  return readTrackedHoldings({
+    chain,
+    tokens,
+    wallets,
+    decimals,
+    request: (url, body) => json(url, {}, body),
+  });
 }
 
 export async function resolveTape(trades) {

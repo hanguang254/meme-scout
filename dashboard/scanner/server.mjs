@@ -8,12 +8,15 @@ import {
   fetchTape,
   resolveTape,
   quoteMarket,
+  readTracked,
   cooldownUntil,
   gmgnPace,
 } from './providers.mjs';
 import { openTapeSocket } from './tape-socket.mjs';
+import { Watchlist } from './watchlist.mjs';
 const envFile = fileURLToPath(new URL('../.env.local', import.meta.url));
 if (fs.existsSync(envFile)) process.loadEnvFile(envFile);
+const watchlist = new Watchlist();
 const monitor = new Monitor({
   discover,
   collect,
@@ -21,9 +24,16 @@ const monitor = new Monitor({
   resolveTape,
   quoteMarket,
   openTapeSocket,
+  readTracked,
+  watchlist,
   gmgnCooldown: () => cooldownUntil('gmgn'),
   gmgnPace,
 });
+watchlist.onChange = (addressesChanged) => {
+  // A renamed address needs no request — the name is joined on at snapshot time.
+  if (addressesChanged) monitor.refreshTracked();
+  else monitor.push();
+};
 // Only this machine's tabs subscribe; the bound cap keeps a runaway reloader
 // from holding an unbounded number of open responses.
 const MAX_STREAMS = 8;
@@ -153,10 +163,17 @@ export const server = http.createServer(async (req, res) => {
 });
 server.listen(4319, '127.0.0.1', () => {
   console.log('Meme Scout data service: http://127.0.0.1:4319');
+  const list = watchlist.start();
+  console.log(
+    list.present
+      ? `追踪名单：${list.entries.length} 个地址${list.skipped.length ? `（${list.skipped.length} 条跳过）` : ''}`
+      : '追踪名单：未配置 watchlist.json，追踪地址一列显示未配置',
+  );
   monitor.resume();
 });
 for (const signal of ['SIGINT', 'SIGTERM'])
   process.on(signal, () => {
+    watchlist.stop();
     monitor.pause();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 2000).unref();

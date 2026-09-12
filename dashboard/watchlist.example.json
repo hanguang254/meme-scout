@@ -1,0 +1,21 @@
+[
+  {
+    "address": "0x1111111111111111111111111111111111111111",
+    "name": "榜一小地址",
+    "emoji": "👻",
+    "alertsOnToast": true,
+    "alertsOnFeed": true,
+    "alertsOnBubble": true,
+    "sound": "default"
+  },
+  {
+    "address": "0x2222222222222222222222222222222222222222",
+    "name": "",
+    "emoji": "",
+    "groups": [],
+    "alertsOnToast": false,
+    "alertsOnFeed": true,
+    "alertsOnBubble": false,
+    "sound": "default"
+  }
+]

@@ -196,6 +196,47 @@ export type Market = {
   sources: Source[];
   intervalSeconds: number;
 };
+export type TrackedHit = {
+  address: string;
+  note: string;
+  emoji: string;
+  // Null when the token's decimals could not be read: the chain still said this
+  // wallet holds a non-zero balance, only its size is unknown.
+  amount: number | null;
+  usd: number | null;
+};
+export type TrackedRow = {
+  count: number;
+  hits: TrackedHit[];
+  // Addresses whose balance this coin's sweep did not obtain. They are neither
+  // holders nor non-holders, and are never folded into `count`.
+  unknown: number;
+  status: 'ok' | 'partial' | 'unchecked';
+};
+// Exact on-chain balances for a hand-maintained address list, read at one pinned
+// block per sweep. Every field that could be mistaken for "checked and zero"
+// carries the state that distinguishes it.
+export type Tracked = {
+  configured: boolean;
+  supported: boolean;
+  wallets: number;
+  swept: number;
+  pending: boolean;
+  block: number | null;
+  rpc: string | null;
+  observedAt: string | null;
+  nextTick: string | null;
+  busy: boolean;
+  stale: boolean;
+  requests: number;
+  error: string | null;
+  listError: string | null;
+  listLoadedAt: string | null;
+  listSkipped: { index: number; address: string | null; reason: string }[];
+  listSkippedTotal: number;
+  intervalSeconds: number;
+  byCandidate: Record<string, TrackedRow>;
+};
 export type Sort = 'heat' | 'new';
 export type State = {
   enabled: boolean;
@@ -228,4 +269,5 @@ export type State = {
   } | null;
   market: Market;
   tape: Tape;
+  tracked: Tracked;
 };
