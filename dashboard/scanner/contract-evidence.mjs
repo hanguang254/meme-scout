@@ -1,4 +1,4 @@
-import { validAddress } from './risk.mjs';
+import { CHAINS, validAddress } from './risk.mjs';
 
 export const ROBINHOOD_RPC = 'https://rpc.mainnet.chain.robinhood.com';
 export const ROBINHOOD_EXPLORER = 'https://robinhoodchain.blockscout.com';
@@ -35,16 +35,26 @@ export function responseFor(rows, id) {
   return row.result;
 }
 
-export async function readRobinhoodContract(address, request) {
-  if (!validAddress('robinhood', address)) throw new Error('合约地址无效');
-  const head = await request(ROBINHOOD_RPC, [
+// The same read on any EVM chain here: is there code at this address, is it a
+// known minimal clone, and does owner() still answer. It matters most on the
+// chains no security API covers — there it is the only contract evidence that
+// exists, so it is worth making the chain a parameter rather than a constant.
+export async function readContractState(chain, address, request, rpc) {
+  if (!validAddress(chain, address)) throw new Error('合约地址无效');
+  const url = rpc || ROBINHOOD_RPC;
+  const head = await request(url, [
     { jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] },
     { jsonrpc: '2.0', id: 2, method: 'eth_blockNumber', params: [] },
   ]);
-  if (responseFor(head, 1) !== '0x1237') throw new Error('RPC 链 ID 不匹配');
+  const expected = CHAINS[chain]?.id;
+  // Reading the wrong chain would answer every question below plausibly and
+  // wrongly — an address with no code there looks exactly like a token that was
+  // never deployed. Cheaper to refuse than to explain later.
+  if (expected && BigInt(responseFor(head, 1)) !== BigInt(expected))
+    throw new Error('RPC 链 ID 不匹配');
   const block = responseFor(head, 2);
   if (!/^0x[\da-f]+$/i.test(block)) throw new Error('RPC 区块编号无效');
-  const rows = await request(ROBINHOOD_RPC, [
+  const rows = await request(url, [
     { jsonrpc: '2.0', id: 3, method: 'eth_getCode', params: [address, block] },
     {
       jsonrpc: '2.0',

@@ -20,6 +20,18 @@ const quotes = (entries) => ({
   quotes: new Map(entries),
   sources: [{ name: 'DexScreener 实时行情', status: 'ok', data: null }],
 });
+// The fixtures below are Solana coins, so the monitor has to be watching
+// Solana for them to be quoted at all: a quote lane is opened per selected
+// chain and a coin is looked up under its own chain's lane.
+const watchSol = (m) => {
+  m.configure({
+    chains: ['sol'],
+    minCap: 10000,
+    maxCap: 5000000,
+    minLiquidity: 5000,
+  });
+  return m;
+};
 
 test('a missing window is reported as unknown rather than as a flat market', () => {
   // DexScreener omits priceChange.m5 and volume.m5 when it has nothing to
@@ -72,6 +84,7 @@ test('a live quote never rewrites the market cap a stored report was built at', 
     quoteMarket: async () => quotes([['aabb', { marketCap: 250000 }]]),
     autoSchedule: false,
   });
+  watchSol(m);
   await m.refresh();
   await m.scan();
   const report = m.state.reports['sol:a'];
@@ -125,9 +138,11 @@ test('a live quote never rewrites the first cap either', async () => {
     quoteMarket: async () => quotes([['aabb', { marketCap: 250000 }]]),
     autoSchedule: false,
   });
+  watchSol(m);
   await m.refresh();
   await m.scan();
   await m.tickMarket();
+  assert.equal(m.state.candidates[0].marketCap, 250000, '行情必须真的落到候选上');
   assert.equal(m.state.reports['sol:a'].first.marketCap, 100000);
   m.pause();
 });
@@ -142,6 +157,7 @@ test('the quote refreshes prices without changing which candidates are listed', 
     quoteMarket: async () => quotes([['aabb', { marketCap: 9e9, liquidity: 1 }]]),
     autoSchedule: false,
   });
+  watchSol(m);
   await m.refresh();
   assert.equal(m.state.candidates.length, 2);
   await m.tickMarket();
@@ -167,12 +183,16 @@ test('a tick that updated nothing does not stamp a fresh observation time', asyn
     }),
     autoSchedule: false,
   });
+  watchSol(m);
   await m.refresh();
   await m.tickMarket();
   assert.equal(m.state.market.observedAt, null);
   assert.equal(m.state.market.quoted, 0);
   assert.match(m.state.market.error, /1\/1 批未取得/);
   assert.match(m.state.market.error, /触发限流/);
+  // With several chains quoted at once, "one batch failed" says nothing about
+  // which board rows are affected unless the message names the chain.
+  assert.match(m.state.market.error, /Solana/);
   m.pause();
 });
 
@@ -183,6 +203,7 @@ test('a chain with no quote endpoint is reported as unsupported, not as an error
     quoteMarket: async () => ({ quotes: new Map(), sources: [] }),
     autoSchedule: false,
   });
+  watchSol(m);
   await m.refresh();
   await m.tickMarket();
   assert.equal(m.state.market.supported, false);
@@ -222,8 +243,12 @@ test('discovery starts the first quote without waiting a full interval', async (
     },
     autoSchedule: false,
   });
+  watchSol(m);
   await m.refresh();
-  assert.equal(calls, 1);
+  assert.equal(calls, 1, '发现完成时行情请求必须已经发出');
+  // Joins the tick discovery already started, so the assertion below reads a
+  // settled quote rather than racing the microtask that applies it.
+  await m.tickMarket();
   assert.equal(m.state.candidates[0].marketCap, 7);
   m.pause();
 });

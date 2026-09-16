@@ -1,12 +1,16 @@
 import { buildProfileFindings, normalizeXAccount } from './profile.mjs';
 import { arr, flag, fraction, number } from './values.mjs';
 export { flag, fraction, number } from './values.mjs';
+// `dex` is DexScreener's own slug for the chain, and its absence is a fact
+// about coverage rather than an omission: DexScreener does not index Arc at
+// all, so that chain's quotes and discovery come from GeckoTerminal instead.
 export const CHAINS = {
   sol: { label: 'Solana', dex: 'solana' },
   bsc: { label: 'BNB Chain', dex: 'bsc', id: 56 },
   base: { label: 'Base', dex: 'base', id: 8453 },
   eth: { label: 'Ethereum', dex: 'ethereum', id: 1 },
   robinhood: { label: 'Robinhood', dex: 'robinhood', id: 4663 },
+  arc: { label: 'Arc', dex: null, gecko: 'arc', id: 5042 },
 };
 export function validAddress(chain, address) {
   if (!CHAINS[chain] || typeof address !== 'string') return false;
@@ -34,6 +38,39 @@ export function selectCandidates(rows, config) {
     );
   });
   return { selected, unknownCap };
+}
+// Total rows on the board, shared across every selected chain rather than
+// granted per chain. The scan queue is what this number really sets: 40 coins
+// take about 101 seconds to work through, and letting the cap grow with the
+// number of chains would make every row's turn come that much slower.
+export const BOARD_LIMIT = 40;
+// With the cap shared, pure merit would let one busy chain take every slot and
+// a quiet chain would be invisible — the opposite of what selecting it asked
+// for. Each selected chain is guaranteed the same floor; everything above the
+// floor is still won on the chosen order. A chain with fewer rows than its
+// floor leaves the remainder to the others instead of holding empty seats.
+export function capByChain(rows, chains, limit = BOARD_LIMIT) {
+  const list = [...new Set((chains || []).filter(Boolean))];
+  if (list.length < 2) return rows.slice(0, limit);
+  const floor = Math.floor(limit / list.length);
+  const taken = new Map(list.map((c) => [c, 0]));
+  const reserved = [];
+  const rest = [];
+  for (const row of rows) {
+    const used = taken.get(row?.chain);
+    if (used === undefined || used >= floor) rest.push(row);
+    else {
+      taken.set(row.chain, used + 1);
+      reserved.push(row);
+    }
+  }
+  const keep = new Set(reserved);
+  for (const row of rest.slice(0, Math.max(0, limit - reserved.length)))
+    keep.add(row);
+  // Order is what the list means, so a reserved row is put back where it ranked
+  // rather than promoted to the front: a guaranteed seat is a seat on the
+  // board, not a place above rows that outranked it.
+  return rows.filter((r) => keep.has(r));
 }
 export const SORTS = ['heat', 'new'];
 // `heat` is the order discovery already produced. `new` re-sorts by pool
@@ -156,7 +193,10 @@ export function evaluateRisk(candidate, data, sources = []) {
     sources.find(
       (s) =>
         s.name === name &&
-        ['error', 'unconfigured', 'deferred'].includes(s.status),
+        // 'unsupported' belongs here for the same reason as the rest: the
+        // finding is unknown and this is the sentence that says why. A chain
+        // the source never covered is the most explanatory answer of the four.
+        ['error', 'unconfigured', 'deferred', 'unsupported'].includes(s.status),
     )?.error;
   const missingContract = (id, title) => {
     if (id === 'sell-all' && flag(gp.is_in_dex) === false)

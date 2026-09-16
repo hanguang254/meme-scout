@@ -149,9 +149,15 @@ test('sources are reported in a fixed order regardless of which lane finishes fi
     const keys = r.sources.map((s) => s.key);
     assert.deepEqual(
       keys,
-      ['info', 'goplus', 'explorer', 'contract', 'social'],
+      ['info', 'goplus', 'explorer', 'contract', 'honeypot', 'social'],
       '来源顺序不应随并行完成顺序变化',
     );
+    // Robinhood has no sell simulation anywhere. That has to arrive as a row
+    // saying so — an omitted row is indistinguishable from a question answered.
+    const hp = r.sources.find((s) => s.key === 'honeypot');
+    assert.equal(hp.status, 'unsupported');
+    assert.equal(hp.data, null, '无来源的项目不得带数据');
+    assert.match(hp.error, /不支持|未核验/);
   } finally {
     globalThis.fetch = originalFetch;
     resetBreakers();

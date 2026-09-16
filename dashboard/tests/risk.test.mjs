@@ -7,6 +7,8 @@ import {
   evaluateRisk,
   analyzeSocial,
   selectCandidates,
+  capByChain,
+  BOARD_LIMIT,
 } from '../scanner/risk.mjs';
 
 test('API strings and missing fields retain three states', () => {
@@ -234,4 +236,59 @@ test('missing account and post times are explicitly incomplete social checks', (
     report.findings.find((f) => f.id === 'social').severity,
     'unknown',
   );
+});
+
+// The board's row cap is shared across the selected chains rather than granted
+// per chain, because the cap is really the scan queue's length. Sharing it is
+// what makes a floor necessary: one busy chain would otherwise take every slot
+// and a chain the user explicitly selected would show nothing at all.
+const row = (chain, i) => ({ id: `${chain}:${i}`, chain });
+const rowsOf = (chain, n) => Array.from({ length: n }, (_, i) => row(chain, i));
+test('一条链时名额就是整块，没有保底这回事', () => {
+  const rows = rowsOf('sol', 50);
+  assert.equal(capByChain(rows, ['sol'], 40).length, 40);
+  // Also the shape a page that has not reloaded sends, and a monitor that has
+  // not been configured yet: neither may turn into an empty board.
+  assert.equal(capByChain(rows, [], 40).length, 40);
+  assert.equal(capByChain(rows, undefined, 40).length, 40);
+  // A repeated chain is one chain, not two — otherwise the floor would halve
+  // on a duplicate the page never meant to send.
+  assert.equal(capByChain(rows, ['sol', 'sol'], 40).length, 40);
+});
+test('每条链都拿得到保底名额，剩下的仍按热度争', () => {
+  // Heat order with one chain ahead everywhere: 45 Solana rows before a single
+  // Arc row. Pure merit would end the board before Arc was ever reached.
+  const rows = [...rowsOf('sol', 45), ...rowsOf('arc', 5)];
+  const kept = capByChain(rows, ['sol', 'arc'], 40);
+  assert.equal(kept.length, 40);
+  const arc = kept.filter((r) => r.chain === 'arc');
+  assert.equal(arc.length, 5, 'Arc 的保底名额是 20，有几个给几个');
+  assert.equal(kept.filter((r) => r.chain === 'sol').length, 35);
+  // A seat is a seat on the board, not a place above the rows that outranked
+  // it: the kept rows stay in the order they arrived in.
+  assert.deepEqual(kept, rows.filter((r) => kept.includes(r)));
+  assert.equal(kept[0].id, 'sol:0');
+  assert.equal(kept.at(-1).chain, 'arc');
+});
+test('用不完保底名额的链把剩下的让出来，不占着空位', () => {
+  // 13 apiece with three chains, and eth brings two rows. The eleven it does
+  // not use go back to the queue rather than shortening the board.
+  const rows = [...rowsOf('sol', 60), ...rowsOf('arc', 60), ...rowsOf('eth', 2)];
+  const kept = capByChain(rows, ['sol', 'arc', 'eth'], 40);
+  assert.equal(kept.length, 40);
+  assert.equal(kept.filter((r) => r.chain === 'eth').length, 2);
+  assert.ok(kept.filter((r) => r.chain === 'arc').length >= 13);
+  assert.equal(kept.filter((r) => r.chain === 'sol').length, 40 - 2 - 13);
+});
+test('保底名额不会把没选的链带上榜，也不会多于总数', () => {
+  // A row whose chain is not selected has no floor and competes on merit alone.
+  const rows = [...rowsOf('doge', 40), ...rowsOf('sol', 10), ...rowsOf('arc', 10)];
+  const kept = capByChain(rows, ['sol', 'arc'], 40);
+  assert.equal(kept.length, 40);
+  assert.equal(kept.filter((r) => r.chain === 'sol').length, 10);
+  assert.equal(kept.filter((r) => r.chain === 'arc').length, 10);
+  // Fewer rows than the cap is not an error and must not be padded.
+  assert.equal(capByChain(rowsOf('sol', 3), ['sol', 'arc'], 40).length, 3);
+  assert.equal(capByChain([], ['sol', 'arc'], 40).length, 0);
+  assert.equal(BOARD_LIMIT, 40);
 });

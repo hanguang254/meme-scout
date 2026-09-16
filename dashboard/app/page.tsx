@@ -49,14 +49,75 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
-import type { State, Config, Report, Source } from './types';
+import type { State, Config, Candidate, Report, Source } from './types';
+// `note` is what the chain badge says on hover. It is kept in step with
+// scanner/providers.mjs, which is the authority — GOPLUS_CHAINS, HONEYPOT_CHAINS
+// and RPC_CONTRACT there decide what a report can actually contain. What this
+// adds is saying so on the row itself, before a scan, so a chain with thin
+// coverage does not read as a coin that passed every check.
 const chains = [
-  { id: 'robinhood', label: 'Robinhood' },
-  { id: 'sol', label: 'Solana' },
-  { id: 'bsc', label: 'BNB Chain' },
-  { id: 'base', label: 'Base' },
-  { id: 'eth', label: 'Ethereum' },
+  {
+    id: 'robinhood',
+    label: 'Robinhood',
+    tag: 'RH',
+    feed: 'Robinhood Trenches · 1h 追踪钱包 + Radar',
+    note: '发现来自 Robinhood Trenches（追踪钱包榜、Radar、资金流），行情来自 DexScreener，价格每轮用链上池价刷新。权限证据有 GoPlus 与 Blockscout 合约结构。没有卖出模拟来源，能否卖出一律标未核验。',
+  },
+  {
+    id: 'arc',
+    label: 'Arc',
+    tag: 'ARC',
+    feed: 'GeckoTerminal · 1h 热门池 + 成交榜',
+    note: '发现与行情来自 GeckoTerminal（DexScreener 未收录该链），价格每轮用链上池价刷新。GoPlus 不覆盖 5042、Honeypot.is 也不支持，所以权限证据只剩链上只读状态一项，能否卖出未核验。GeckoTerminal 在该链常只发布 FDV，市值列会标出来。',
+  },
+  {
+    id: 'sol',
+    label: 'Solana',
+    tag: 'SOL',
+    feed: 'GMGN · 1 小时热门交易榜',
+    note: '发现来自 GMGN 热门，行情来自 DexScreener。权限证据有 GoPlus 与 RugCheck。不是 EVM 链，所以没有链上池价刷新、没有追踪地址持仓、Honeypot.is 也不支持，能否卖出未核验。',
+  },
+  {
+    id: 'bsc',
+    label: 'BNB Chain',
+    tag: 'BNB',
+    feed: 'GMGN · 1 小时热门交易榜',
+    note: '发现来自 GMGN 热门，行情来自 DexScreener。权限证据有 GoPlus，卖出模拟有 Honeypot.is。链上池价与追踪地址持仓需要在 .env.local 配 BSC_RPC_URL，未配则如实标未核验。',
+  },
+  {
+    id: 'base',
+    label: 'Base',
+    tag: 'BASE',
+    feed: 'GMGN · 1 小时热门交易榜',
+    note: '发现来自 GMGN 热门，行情来自 DexScreener。权限证据有 GoPlus，卖出模拟有 Honeypot.is。链上池价与追踪地址持仓需要在 .env.local 配 BASE_RPC_URL，未配则如实标未核验。',
+  },
+  {
+    id: 'eth',
+    label: 'Ethereum',
+    tag: 'ETH',
+    feed: 'GMGN · 1 小时热门交易榜',
+    note: '发现来自 GMGN 热门，行情来自 DexScreener。权限证据有 GoPlus，卖出模拟有 Honeypot.is。链上池价与追踪地址持仓需要在 .env.local 配 ETH_RPC_URL，未配则如实标未核验。',
+  },
 ];
+const chainOf = (id: string) => chains.find((c) => c.id === id);
+const chainLabel = (id: string) => chainOf(id)?.label || id;
+const chainNote = (id: string) =>
+  `${chainLabel(id)}：${chainOf(id)?.note || '这条链不在本页登记的覆盖表里，证据能取到哪些以报告里的来源行为准。'}`;
+// The order the panel lists them in, not the order they were clicked, so the
+// same selection always reads the same and comparing two of them is just this.
+const orderChains = (ids: string[]) =>
+  chains.map((c) => c.id).filter((id) => ids.includes(id));
+const sameChains = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((id, i) => id === b[i]);
+// Built field by field rather than spread from the applied config: that one may
+// still carry the old single `chain` key, and sending both would leave which of
+// the two wins up to the service.
+const asConfig = (c: Config, chains: string[]): Config => ({
+  chains,
+  minCap: c.minCap,
+  maxCap: c.maxCap,
+  minLiquidity: c.minLiquidity,
+});
 const money = (n: number | null | undefined) =>
   n == null
     ? '—'
@@ -86,6 +147,25 @@ const drift = (then: number | null | undefined, now: number | null | undefined) 
     text: `${d > 0 ? '+' : ''}${d.toFixed(digits)}%`,
   };
 };
+// What the market-cap cell says on hover. Three separate things, kept separate:
+// what the number is a measure of, where it came from, and whether the price
+// inside it was re-read on chain this cycle. The last one is the whole point of
+// the pool-price lane — a row that does not say which of the two it is showing
+// would let a stale source number pass for a fresh chain read.
+const capNote = (c: Candidate, age: string | null) =>
+  [
+    c.capIsFdv
+      ? `市值 ${money(c.marketCap)}：来源没有发布流通市值，这里显示的是完全稀释估值（FDV）。只有在供应量已全部流通时两者才相等，否则这个数偏大。`
+      : `实时市值 ${money(c.marketCap)}，完全稀释估值 ${money(c.fdv)}；两者的差是未计入流通的供应量，来源没有公布它用的流通量，也没有说明差在哪里，所以不能互相替代。`,
+    `取自 ${c.marketCapSource || c.source}${age ? `，${age}读取` : ''}。`,
+    c.onchain
+      ? `价格已按链上池价重算：区块 ${c.onchain.block ?? '未知'}，${String(
+          c.onchain.version,
+        ).toUpperCase()} 池，比来源报的价 ${
+          drift(1, c.onchain.ratio)?.text ?? '持平'
+        }。流通量口径和报价币的美元价仍然来自来源，只有价格是刚从链上读的。`
+      : `本轮没有用上链上池价（${c.onchainNote || '未读到该池'}），显示的是来源自己发布的数字，它可能比链上落后几十秒。`,
+  ].join('\n');
 const ageText = (at: string | null | undefined, now: number) => {
   const t = at ? Date.parse(at) : NaN;
   if (!Number.isFinite(t)) return null;
@@ -197,12 +277,16 @@ export default function Home() {
     [xToken, setXToken] = useState(''),
     [saved, setSaved] = useState(false),
     [pending, setPending] = useState(false),
+    // Held only while the chain popup is open. Every configure() on the service
+    // throws away the reports collected so far, so picking three chains has to
+    // cost one reset, not three — the draft is committed when the popup closes.
+    [chainDraft, setChainDraft] = useState<string[] | null>(null),
     [observedNow, setObservedNow] = useState(0);
   const seen = useRef({ boot: '', rev: 0 });
   const pace = state?.gmgnPace;
   const marketAge = ageText(state?.market?.observedAt, observedNow);
   const [config, setConfig] = useState<Config>({
-    chain: 'robinhood',
+    chains: ['robinhood'],
     minCap: 10000,
     maxCap: 5000000,
     minLiquidity: 5000,
@@ -317,6 +401,12 @@ export default function Home() {
     ['严重风险', '发现高风险'].includes(r.verdict),
   ).length;
   const applied = state?.config || config;
+  // A data service that has not been restarted still answers with the old
+  // single `chain` key. Reading it here keeps a half-upgraded pair of processes
+  // showing the chain it is actually watching instead of an empty selector.
+  const watching: string[] = applied.chains?.length
+    ? applied.chains
+    : [(applied as unknown as { chain?: string }).chain || 'robinhood'];
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -503,7 +593,7 @@ export default function Home() {
                 makes a stale number look live: discovery decides which coins are
                 listed once a minute, the quote only re-reads their prices. */}
             <p
-              title={`市值、成交、流动性由 DexScreener 每 ${state?.market?.intervalSeconds ?? 15} 秒单独重取，不消耗 GMGN 额度，也不改变候选名单——名单仍由每 60 秒的发现决定。报告里的证据只在该币重扫时更新。`}
+              title={`市值、成交、流动性每 ${state?.market?.intervalSeconds ?? 15} 秒单独重取（DexScreener，Arc 用 GeckoTerminal），每条链各取各的，不消耗 GMGN 额度，也不改变候选名单——名单仍由每 60 秒的发现决定。取回后价格还会用链上池价重算一次，能读到的行会标「链上」。报告里的证据只在该币重扫时更新。`}
             >
               {state?.market?.supported === false
                 ? '实时行情：该链未接入'
@@ -515,7 +605,10 @@ export default function Home() {
             </p>
           </div>
         </div>
-        {applied.chain === 'robinhood' && (
+        {/* The tape is a Robinhood Trenches socket. With several chains watched
+            at once it still only carries Robinhood fills, and the rows it
+            highlights are matched by candidate id, which carries the chain. */}
+        {watching.includes('robinhood') && (
           <LiveTape
             tape={state?.tape}
             enabled={state?.enabled ?? true}
@@ -535,23 +628,43 @@ export default function Home() {
             </div>
             <div className="market-select">
               <Select
-                value={applied.chain}
-                onValueChange={(value) => {
-                  if (value) {
-                    const c = { ...applied, chain: String(value) };
-                    setConfig(c);
-                    void post('/api/monitor', { config: c, enabled: true });
-                  }
+                multiple
+                value={chainDraft ?? watching}
+                onValueChange={(value) =>
+                  setChainDraft(orderChains(value as string[]))
+                }
+                onOpenChange={(open) => {
+                  if (open) return setChainDraft(watching);
+                  const next = chainDraft;
+                  setChainDraft(null);
+                  if (!next || sameChains(next, watching)) return;
+                  // Refusing an empty selection out loud. Quietly restoring the
+                  // previous chains would leave the panel showing something
+                  // other than what was just clicked, with no reason given.
+                  if (!next.length) return setError('至少选择一条链');
+                  const c = asConfig(applied, next);
+                  setConfig(c);
+                  void post('/api/monitor', { config: c, enabled: true });
                 }}
               >
-                <SelectTrigger aria-label="选择监控链">
+                <SelectTrigger
+                  aria-label="选择监控链，可多选"
+                  title={(chainDraft ?? watching).map(chainNote).join('\n\n')}
+                >
                   <SelectValue>
-                    {chains.find((c) => c.id === applied.chain)?.label}
+                    {((ids: string[]) =>
+                      ids.length === 1
+                        ? chainLabel(ids[0])
+                        : ids.length <= 3
+                          ? ids.map((id) => chainOf(id)?.tag || id).join(' · ')
+                          : `${ids.length} 条链`)(chainDraft ?? watching)}
                   </SelectValue>
                 </SelectTrigger>
-                <SelectContent>
+                {/* No single selected item to align the popup to once more than
+                    one can be checked. */}
+                <SelectContent alignItemWithTrigger={false}>
                   {chains.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
+                    <SelectItem key={c.id} value={c.id} title={c.note}>
                       {c.label}
                     </SelectItem>
                   ))}
@@ -561,7 +674,7 @@ export default function Home() {
                 variant="outline"
                 className="filter-button"
                 onClick={() => {
-                  setConfig(applied);
+                  setConfig(asConfig(applied, watching));
                   setFilterOpen(!filterOpen);
                 }}
                 aria-expanded={filterOpen}
@@ -631,10 +744,19 @@ export default function Home() {
             </form>
           )}
           <div className="list-subtitle">
-            <span>
-              {applied.chain === 'robinhood'
-                ? 'Trenches 追踪钱包 + GMGN 热门'
-                : 'GMGN · 1 小时热门交易榜'}
+            <span title={watching.map(chainNote).join('\n\n')}>
+              {watching.length > 1
+                ? `${watching
+                    .map(
+                      (id) =>
+                        `${chainOf(id)?.tag || id} ${
+                          (state?.candidates || []).filter(
+                            (c) => c.chain === id,
+                          ).length
+                        }`,
+                    )
+                    .join(' · ')} · 合并一张榜，每链有保底名额`
+                : chainOf(watching[0])?.feed || watching[0]}
             </span>
             <span>{state?.unknownCap || 0} 个市值未知，未纳入</span>
           </div>
@@ -765,6 +887,16 @@ export default function Home() {
                                 >
                                   {c.symbol}
                                 </button>
+                                {/* Always drawn, even when only one chain is
+                                    watched: it carries the coverage note, and
+                                    the gaps it names are the same gaps whether
+                                    or not another chain sits beside it. */}
+                                <span
+                                  className="chain-tag"
+                                  title={chainNote(c.chain)}
+                                >
+                                  {chainOf(c.chain)?.tag || c.chain}
+                                </span>
                                 <a
                                   className="x-search"
                                   href={`https://x.com/search?q=${encodeURIComponent(c.address)}`}
@@ -790,17 +922,23 @@ export default function Home() {
                                   </a>
                                 )}
                               </span>
-                              <small
-                                title={`实时市值 ${money(c.marketCap)}，取自 ${c.marketCapSource || c.source}${
-                                  marketAge ? `，${marketAge}读取` : ''
-                                }。完全稀释估值 ${money(c.fdv)}；两者的差是未计入流通的供应量，来源没有公布它用的流通量，也没有说明差在哪里，所以不能互相替代。`}
-                              >
+                              <small title={capNote(c, marketAge)}>
                                 {/* Remounting on a new value restarts the
                                     flash, so the eye is drawn only when the
                                     number actually moved — not every poll. */}
                                 <span className="tick" key={c.marketCap}>
                                   {money(c.marketCap)}
                                 </span>
+                                {/* A diluted figure standing in for a
+                                    circulating one is a different quantity, not
+                                    a rounder version of the same one, so the
+                                    number never appears unlabelled. */}
+                                {c.capIsFdv && (
+                                  <span className="cap-tag">FDV</span>
+                                )}
+                                {c.onchain && (
+                                  <span className="cap-tag onchain">链上</span>
+                                )}
                               </small>
                               {since && r?.first && (
                                 <small
@@ -904,7 +1042,11 @@ export default function Home() {
                           </small>
                         </TableCell>
                         <TableCell>
-                          <TrackedCell tracked={state?.tracked} id={c.id} />
+                          <TrackedCell
+                            tracked={state?.tracked}
+                            id={c.id}
+                            chain={c.chain}
+                          />
                         </TableCell>
                         <TableCell className="row-actions">
                           <a
@@ -973,9 +1115,11 @@ export default function Home() {
           <div className="market-footnote">
             <CircleAlert size={14} />
             <span>
-              {applied.chain === 'robinhood'
-                ? '追踪钱包是有限样本；市值由 DexScreener / GMGN 补齐。榜单按追踪买家数、成交量排序。'
-                : '热门榜只用于发现，热度和聪明钱标签不构成安全证据。'}
+              热门榜只用于发现，热度和聪明钱标签不构成安全证据。
+              {watching.includes('robinhood') &&
+                '追踪钱包是有限样本，榜单按追踪买家数、成交量排序。'}
+              {watching.length > 1 &&
+                '多条链合并在一张榜上，排序只比较各自来源给出的热度，跨链之间没有可比的统一口径。'}
             </span>
           </div>
           <div className="feed-health">

@@ -58,7 +58,36 @@ test('invalid monitor settings do not replace current config', () => {
   assert.throws(() =>
     m.configure({ chain: 'evil', minCap: 1, maxCap: 2, minLiquidity: 0 }),
   );
-  assert.equal(m.state.config.chain, 'robinhood');
+  // One bad entry rejects the whole selection. Dropping it and watching the
+  // rest would silently monitor something other than what was asked for.
+  assert.throws(() =>
+    m.configure({
+      chains: ['sol', 'evil'],
+      minCap: 1,
+      maxCap: 2,
+      minLiquidity: 0,
+    }),
+  );
+  assert.throws(() =>
+    m.configure({ chains: [], minCap: 1, maxCap: 2, minLiquidity: 0 }),
+  );
+  assert.deepEqual(m.state.config.chains, ['robinhood']);
+  m.pause();
+});
+
+test('a page that has not reloaded still selects one chain with the old key', () => {
+  const m = new Monitor({ autoSchedule: false });
+  m.configure({ chain: 'sol', minCap: 1000, maxCap: 1e9, minLiquidity: 0 });
+  assert.deepEqual(m.state.config.chains, ['sol']);
+  // A repeated chain is one chain, not two — the quota split would otherwise
+  // halve the board over a single selection.
+  m.configure({
+    chains: ['sol', 'bsc', 'sol'],
+    minCap: 1000,
+    maxCap: 1e9,
+    minLiquidity: 0,
+  });
+  assert.deepEqual(m.state.config.chains, ['sol', 'bsc']);
   m.pause();
 });
 test('changing the sort re-orders without discarding reports or re-discovering', async () => {
@@ -131,8 +160,8 @@ test('a snapshot built later always outranks one built earlier', () => {
   });
   // The reply the switch itself returns.
   const after = m.summary();
-  assert.equal(before.config.chain, 'robinhood');
-  assert.equal(after.config.chain, 'bsc');
+  assert.deepEqual(before.config.chains, ['robinhood']);
+  assert.deepEqual(after.config.chains, ['bsc']);
   assert.ok(after.rev > before.rev, '切链后的快照必须比切链前的新');
   assert.equal(after.boot, before.boot, '同一进程的 boot 不能变');
   // Two snapshots of an unchanged state still order, so a reply can never tie

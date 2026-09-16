@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  readRobinhoodContract,
+  readContractState,
   summarizeExplorer,
 } from '../scanner/contract-evidence.mjs';
 const address = '0x' + 'a'.repeat(40);
 test('RPC checks chain and pins owner/code reads to an observed block', async () => {
   const calls = [];
-  const r = await readRobinhoodContract(address, async (_url, body) => {
+  const r = await readContractState('robinhood', address, async (_url, body) => {
     calls.push(body);
     return body[0].id === 1
       ? [
@@ -26,10 +26,22 @@ test('RPC checks chain and pins owner/code reads to an observed block', async ()
 test('wrong chain aborts and reverted owner calls stay unknown', async () => {
   await assert.rejects(
     () =>
-      readRobinhoodContract(address, async () => [{ id: 1, result: '0x1' }]),
+      readContractState('robinhood', address, async () => [
+        { id: 1, result: '0x1' },
+      ]),
     /链 ID/,
   );
-  const r = await readRobinhoodContract(address, async (_u, b) =>
+  // The same endpoint answering for the wrong chain is what the check is for:
+  // Arc's own id must be demanded on Arc, or a token that was never deployed
+  // there would read exactly like one with no code.
+  await assert.rejects(
+    () =>
+      readContractState('arc', address, async () => [
+        { id: 1, result: '0x1237' },
+      ]),
+    /链 ID/,
+  );
+  const r = await readContractState('robinhood', address, async (_u, b) =>
     b[0].id === 1
       ? [
           { id: 1, result: '0x1237' },

@@ -32,9 +32,39 @@ type View = {
 // it must never do is print a number that reads as "checked, nobody holds it"
 // when nothing was actually checked — so "0" and "未核验" are separate states
 // all the way through, and the state that produced each is on the hover.
-function build(tracked: Tracked | undefined, id: string): View {
-  const at = tracked?.observedAt
-    ? `区块 #${tracked.block} · ${clock(tracked.observedAt)} 读取`
+// Each chain is swept separately against its own endpoint and fails separately,
+// so a row's block, freshness and errors are its own chain's — never the
+// weakest of all of them. A Robinhood row reading "未配置 RPC" because Base was
+// selected without one would be reporting a different chain's settings as this
+// coin's, which is exactly the kind of borrowed answer this column exists to
+// avoid. A chain absent from the breakdown was not read this round rather than
+// unreadable, so it keeps `supported` and lands in 本轮未取得.
+const laneFor = (tracked: Tracked | undefined, chain: string) => {
+  const lanes = tracked?.chains;
+  if (!lanes?.length)
+    // A data service that has not restarted sends no breakdown. Its aggregate
+    // fields then describe the single chain it was watching, which is this one.
+    return {
+      supported: tracked?.supported ?? true,
+      block: tracked?.block ?? null,
+      observedAt: tracked?.observedAt ?? null,
+      swept: tracked?.swept ?? 0,
+      error: tracked?.error ?? null,
+    };
+  return (
+    lanes.find((x) => x.chain === chain) || {
+      supported: true,
+      block: null,
+      observedAt: null,
+      swept: 0,
+      error: null,
+    }
+  );
+};
+function build(tracked: Tracked | undefined, id: string, chain: string): View {
+  const lane = laneFor(tracked, chain);
+  const at = lane.observedAt
+    ? `区块 #${lane.block} · ${clock(lane.observedAt)} 读取`
     : '尚未读取';
   if (!tracked || !tracked.configured)
     return {
@@ -49,7 +79,7 @@ function build(tracked: Tracked | undefined, id: string): View {
         tracked?.listError || '名单文件改动后会自动重载，不用重启服务。',
       ],
     };
-  if (!tracked.supported)
+  if (!lane.supported)
     return {
       tone: 'unknown',
       value: '未核验',
@@ -57,7 +87,7 @@ function build(tracked: Tracked | undefined, id: string): View {
       sub: '该链不可读',
       hint: '这一格不是 0，也不代表名单里没人持有——这条链的余额根本没读到。',
       head: '追踪地址｜无法核验',
-      lines: [tracked.error || '该链未配置 RPC。'],
+      lines: [lane.error || '该链未配置 RPC。'],
     };
   const row = tracked.byCandidate[id];
   if (!row || row.status === 'unchecked')
@@ -72,16 +102,17 @@ function build(tracked: Tracked | undefined, id: string): View {
         row?.unknown
           ? `${row.unknown} 个地址的 balanceOf 调用未成功，可能不是标准 ERC-20。`
           : `名单 ${tracked.wallets} 个地址，每 ${tracked.intervalSeconds} 秒核验一轮。`,
-        tracked.error || at,
+        lane.error || at,
       ],
     };
   const extra: string[] = [];
   if (row.unknown)
     extra.push(`另有 ${row.unknown} 个地址本轮未取得余额，未计入上面的数量。`);
-  if (tracked.pending)
+  if (lane.swept && lane.swept < tracked.wallets)
     extra.push(
-      `名单已改为 ${tracked.wallets} 个（这次读的是 ${tracked.swept} 个），正在重新核验。`,
+      `名单已改为 ${tracked.wallets} 个（这次读的是 ${lane.swept} 个），正在重新核验。`,
     );
+  if (lane.error) extra.push(lane.error);
   if (tracked.stale) extra.push('这一轮没有刷新，上面是上次读到的结果。');
   if (tracked.listError) extra.push(tracked.listError);
   if (!row.count)
@@ -89,8 +120,8 @@ function build(tracked: Tracked | undefined, id: string): View {
       tone: 'muted',
       value: '0',
       unit: '',
-      sub: `${tracked.wallets} 个已查`,
-      hint: `名单里 ${tracked.wallets} 个地址在这个区块上的余额都是 0。`,
+      sub: `${lane.swept || tracked.wallets} 个已查`,
+      hint: `名单里 ${lane.swept || tracked.wallets} 个地址在这个区块上的余额都是 0。`,
       head: '追踪地址｜无人持有',
       lines: [at, ...extra],
     };
@@ -122,13 +153,15 @@ function build(tracked: Tracked | undefined, id: string): View {
 export function TrackedCell({
   tracked,
   id,
+  chain,
 }: {
   tracked?: Tracked;
   id: string;
+  chain: string;
 }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [open, setOpen] = useState(false);
-  const view = build(tracked, id);
+  const view = build(tracked, id, chain);
   return (
     <span
       ref={setAnchor}

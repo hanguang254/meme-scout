@@ -25,13 +25,20 @@ export const RPC_ENV = {
   eth: 'ETH_RPC_URL',
   bsc: 'BSC_RPC_URL',
   base: 'BASE_RPC_URL',
+  arc: 'ARC_RPC_URL',
 };
+// Arc's own documented endpoints answer 401 without Circle credentials, so the
+// default here is a community endpoint that was measured working rather than
+// assumed. It is a default, not a recommendation: ARC_RPC_URL overrides it, and
+// a rate limit on it shows up as 未核验 in the column rather than as a zero.
+const ARC_RPC = 'https://rpc.arc-scan.org';
 // Robinhood's public endpoint is already known and used elsewhere; the other
 // chains need an endpoint supplied, and say so rather than guessing at a public
 // one whose rate limit would turn into silent gaps in the counts.
 export function rpcFor(chain) {
   if (chain === 'robinhood')
     return process.env.ROBINHOOD_RPC_URL || ROBINHOOD_RPC;
+  if (chain === 'arc') return process.env.ARC_RPC_URL || ARC_RPC;
   const url = process.env[RPC_ENV[chain] || ''];
   return typeof url === 'string' && /^https:\/\/\S+$/.test(url.trim())
     ? url.trim()

@@ -1262,6 +1262,42 @@ button[data-slot='button'] {
 .cap-drift {
   margin-left: 4px;
 }
+/* Which chain the row is on. Deliberately the quietest mark in the cell — it
+   identifies the coin, it does not rate it, so it sits below the name and well
+   below anything coloured by risk. Always present, because its tooltip is where
+   a chain's evidence gaps are stated. */
+.chain-tag {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 0 4px;
+  border: 1px solid #2a3b47;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 15px;
+  color: #6f8595;
+  cursor: help;
+}
+/* Two different facts about the number beside it, so they share a shape but not
+   a colour: FDV says the figure measures something other than what the column
+   heading implies, 链上 says its price was re-read this cycle. Neither is a
+   verdict, so both stay off the risk palette. */
+.cap-tag {
+  margin-left: 5px;
+  padding: 0 3px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  background: #2b2418;
+  color: #c9a15f;
+}
+.cap-tag.onchain {
+  background: #17262b;
+  color: #6f9aa8;
+}
 #candidate-workspace {
   scroll-margin-top: 18px;
 }

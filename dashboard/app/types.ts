@@ -73,6 +73,15 @@ export type Candidate = {
   // circulating; the source publishes neither the supply it used nor the reason
   // they differ, so one can never be substituted for the other.
   fdv?: number | null;
+  // The source published no circulating market cap, so `marketCap` above is the
+  // FDV standing in for it. The column has to say so: for a coin whose supply is
+  // not all circulating, the two are different numbers about different things.
+  capIsFdv?: boolean;
+  // The pool this coin trades in, read straight off the chain this cycle, and
+  // used to rescale the source's cap. Null when no read was applied, and then
+  // `onchainNote` says which of the several reasons it was.
+  onchain?: { block: number | null; version: string; ratio: number } | null;
+  onchainNote?: string | null;
   liquidity: number | null;
   volume: number | null;
   volumeWindow: string;
@@ -178,7 +187,10 @@ export type Report = {
   };
 };
 export type Config = {
-  chain: string;
+  // Every selected chain is discovered, quoted and swept in its own lane, and
+  // the results land on one board. The scanner still accepts the old single
+  // `chain` key so a tab that has not reloaded keeps working.
+  chains: string[];
   minCap: number;
   maxCap: number;
   minLiquidity: number;
@@ -236,6 +248,19 @@ export type Tracked = {
   listSkippedTotal: number;
   intervalSeconds: number;
   byCandidate: Record<string, TrackedRow>;
+  // One entry per chain the sweep covered. The headline `block` and `rpc` above
+  // are null whenever more than one chain was read, because there is no single
+  // block that the counts were all taken at.
+  chains: {
+    chain: string;
+    supported: boolean;
+    rpc: string | null;
+    block: number | null;
+    swept: number;
+    requests: number;
+    observedAt: string | null;
+    error: string | null;
+  }[];
 };
 export type Sort = 'heat' | 'new';
 export type State = {

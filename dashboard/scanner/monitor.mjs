@@ -2,6 +2,7 @@ import {
   CHAINS,
   selectCandidates,
   orderCandidates,
+  capByChain,
   evaluateRisk,
   number,
   SORTS,
@@ -50,6 +51,18 @@ const TRACKED_INTERVAL = 20000;
 // gaps on the board; they queue behind the coins that have nothing at all.
 const incomplete = (report) =>
   (report?.sources || []).some((s) => s.status === 'deferred');
+// The listings that decide whether a chain's discovery actually ran. A chain
+// keeps its previous candidates unless one of its own primary sources answered,
+// so the set has to cover every discovery lane — the GeckoTerminal pair is how
+// the chains DexScreener does not index are found at all, and leaving them out
+// would mark those chains permanently stale.
+const DISCOVERY_PRIMARY = new Set([
+  'Robinhood Trenches',
+  'Trenches Radar',
+  'GMGN 热门',
+  'GeckoTerminal 热门池',
+  'GeckoTerminal 成交榜',
+]);
 const withoutData = ({ data: _data, ...meta }) => meta;
 // The market cap the first report was written at, carried forward unchanged
 // through every rescan. Without it the only anchor on the page is the latest
@@ -89,6 +102,10 @@ const emptyTracked = () => ({
   requests: 0,
   error: null,
   byCandidate: {},
+  // One entry per selected chain. The sweep reads each chain separately and
+  // they fail separately, so a single block number and a single error message
+  // would have to speak for all of them — and would be wrong about most.
+  chains: [],
   intervalSeconds: TRACKED_INTERVAL / 1000,
 });
 const emptyTape = () => ({
@@ -116,6 +133,8 @@ export class Monitor {
     fetchTape,
     resolveTape,
     quoteMarket = null,
+    freshenMarket = null,
+    anchorTtl = () => 0,
     openTapeSocket = null,
     readTracked = null,
     watchlist = null,
@@ -127,6 +146,8 @@ export class Monitor {
     this.discover = discover;
     this.collect = collect;
     this.quoteMarket = quoteMarket;
+    this.freshenMarket = freshenMarket;
+    this.anchorTtl = anchorTtl;
     this.readTracked = readTracked;
     this.watchlist = watchlist;
     this.gmgnCooldown = gmgnCooldown;
@@ -141,6 +162,10 @@ export class Monitor {
     this.notifyTimer = null;
     this.notifiedAt = 0;
     this.baseCandidates = [];
+    // Discovery is per chain and fails per chain. Holding the last good result
+    // for each one separately is what lets a chain whose sources are down keep
+    // showing what it had while the others refresh normally.
+    this.baseByChain = new Map();
     this.quoteCache = new Map();
     this.quoteAttempts = new Map();
     this.liveIds = new Set();
@@ -156,13 +181,22 @@ export class Monitor {
     // ERC-20 decimals cannot change, so one read per token lasts as long as the
     // token is on the list.
     this.trackedDecimals = new Map();
+    // The unscaled quote each chain's source last published, kept so the
+    // on-chain price can be applied to it as a ratio. Applying that ratio to an
+    // already-scaled price would compound the two and drift further every tick,
+    // so what is stored here is deliberately the source's own number.
+    this.marketAnchors = new Map();
+    // Pool token order and token decimals, per chain. Neither can change, but
+    // both are chain-scoped facts: the same address is a different contract on
+    // a different chain, so one shared map would answer confidently and wrongly.
+    this.poolMeta = new Map();
     // Stamps every snapshot handed to a page. See summary() for why.
     this.rev = 0;
     this.boot = Math.random().toString(36).slice(2, 10);
     this.state = {
       enabled: true,
       config: {
-        chain: 'robinhood',
+        chains: ['robinhood'],
         minCap: 10000,
         maxCap: 5000000,
         minLiquidity: 5000,
@@ -191,17 +225,23 @@ export class Monitor {
     this.timer = null;
   }
   configure(c) {
+    // A page that has not reloaded since this became multi-select still sends
+    // one chain as a string. One selected chain is exactly what that means.
+    const chains = [
+      ...new Set(Array.isArray(c.chains) ? c.chains : c.chain ? [c.chain] : []),
+    ];
     if (
-      !CHAINS[c.chain] ||
+      !chains.length ||
+      chains.some((chain) => !CHAINS[chain]) ||
       [c.minCap, c.maxCap, c.minLiquidity].some(
         (v) => number(v) === null || v < 0,
       ) ||
       c.minCap >= c.maxCap ||
       c.maxCap > 1e12
     )
-      throw new Error('市值或流动性范围无效');
+      throw new Error('所选链或市值、流动性范围无效');
     this.state.config = {
-      chain: c.chain,
+      chains,
       minCap: Number(c.minCap),
       maxCap: Number(c.maxCap),
       minLiquidity: Number(c.minLiquidity),
@@ -211,12 +251,15 @@ export class Monitor {
     this.state.reports = {};
     this.state.updatedAt = null;
     this.baseCandidates = [];
+    this.baseByChain.clear();
     this.quoteCache.clear();
     this.quoteAttempts.clear();
     this.liveIds.clear();
     this.scanAttempts.clear();
     this.state.market = emptyMarket();
     this.state.tape = emptyTape();
+    this.marketAnchors.clear();
+    this.poolMeta.clear();
     // Balances belong to the chain they were read on, and a token id is
     // chain-scoped, so a chain switch invalidates every one of them.
     this.state.tracked = emptyTracked();
@@ -228,6 +271,12 @@ export class Monitor {
     this.stopTapeStream();
     if (this.state.enabled) this.startTapeStream();
     this.push();
+  }
+  chains() {
+    return this.state.config.chains;
+  }
+  watching(chain) {
+    return this.state.config.chains.includes(chain);
   }
   // Re-ordering issues no request and keeps every cached report, so unlike
   // configure() this reuses the candidates already discovered.
@@ -306,11 +355,14 @@ export class Monitor {
     }
   }
   startTapeStream() {
+    // The tape is one chain's order flow and exists nowhere else, so it runs
+    // whenever Robinhood is among the selected chains rather than only when it
+    // is the sole one.
     if (
       !this.openTapeSocket ||
       this.socket ||
       !this.state.enabled ||
-      this.state.config.chain !== 'robinhood'
+      !this.watching('robinhood')
     )
       return;
     const generation = this.state.generation;
@@ -488,13 +540,16 @@ export class Monitor {
       ids = new Set(priority.map((c) => c.id));
     // Order before the cap, so a token that ranks low on heat can still reach
     // the list on age. Live buys keep the front regardless of the chosen order.
-    s.candidates = [
-      ...priority,
-      ...orderCandidates(
-        picked.selected.filter((c) => !ids.has(c.id)),
-        s.sort,
-      ),
-    ].slice(0, 40);
+    s.candidates = capByChain(
+      [
+        ...priority,
+        ...orderCandidates(
+          picked.selected.filter((c) => !ids.has(c.id)),
+          s.sort,
+        ),
+      ],
+      s.config.chains,
+    );
     s.total = merged.size;
     s.unknownCap = picked.unknownCap;
     for (const [id, value] of this.quoteCache)
@@ -512,11 +567,7 @@ export class Monitor {
         delete s.reports[id];
   }
   async pollTape() {
-    if (
-      !this.fetchTape ||
-      !this.state.enabled ||
-      this.state.config.chain !== 'robinhood'
-    )
+    if (!this.fetchTape || !this.state.enabled || !this.watching('robinhood'))
       return;
     if (this.tapePromise) return this.tapePromise;
     clearTimeout(this.tapeTimer);
@@ -623,16 +674,74 @@ export class Monitor {
   // reference to the candidate it was built from, so writing a new price through
   // that object would silently rewrite the market cap the verdict was reached
   // at — the one number that makes an old report readable.
-  applyQuotes(quotes) {
-    if (!quotes?.size) return 0;
-    const key = (c) => String(c.address).toLowerCase();
+  // `byChain` is Map<chain, Map<lowercase address, quote>>. Keeping the chain in
+  // the lookup is not defensive tidiness: the same 20-byte address is a
+  // different contract on every EVM chain, and a flat address key would file
+  // one chain's price under another chain's coin as a number that looks fine.
+  applyQuotes(byChain) {
+    let total = 0;
+    for (const quotes of byChain.values()) total += quotes.size;
+    if (!total) return 0;
+    const find = (c) =>
+      byChain.get(c.chain)?.get(String(c.address).toLowerCase()) ?? null;
     const merge = (c) => {
-      const q = quotes.get(key(c));
+      const q = find(c);
       return q ? { ...c, ...q } : c;
     };
     this.baseCandidates = this.baseCandidates.map(merge);
+    for (const [chain, rows] of this.baseByChain)
+      this.baseByChain.set(chain, rows.map(merge));
     this.state.candidates = this.state.candidates.map(merge);
-    return this.state.candidates.filter((c) => quotes.has(key(c))).length;
+    return this.state.candidates.filter((c) => find(c)).length;
+  }
+  // The source's own quote for one chain, re-fetched only when it has nothing
+  // useful left to say. DexScreener republishes about every 32 seconds and
+  // allows ~300 requests a minute, so it is asked every tick; GeckoTerminal
+  // allows a tenth of that and was measured lagging the chain by minutes, so
+  // polling it every 6 seconds would spend its whole budget re-reading bytes it
+  // had already sent. Either way the price on screen comes from the pool read
+  // below, which runs every tick on both.
+  async marketAnchor(chain, addresses, now) {
+    const held = this.marketAnchors.get(chain);
+    const ttl = this.anchorTtl(chain);
+    const covered =
+      held && addresses.every((a) => held.quotes.has(String(a).toLowerCase()));
+    // A candidate the anchor has never seen has no pool, no supply and no
+    // dollar rate to scale, so a newly discovered coin re-fetches regardless of
+    // how recently the rest of the chain was quoted.
+    if (held && covered && now - held.at < ttl) return { ...held, reused: true };
+    const r = await this.quoteMarket(chain, addresses);
+    const fresh = { quotes: r.quotes, sources: r.sources, at: now };
+    this.marketAnchors.set(chain, fresh);
+    return { ...fresh, reused: false };
+  }
+  async quoteChain(chain, addresses, now) {
+    const anchor = await this.marketAnchor(chain, addresses, now);
+    const sources = anchor.sources.map((s) =>
+      anchor.reused
+        ? // Reused evidence keeps the time it was actually fetched. Re-stamping
+          // it now would make the age beside the row the age of this tick.
+          { ...s, reused: true }
+        : s,
+    );
+    // A held anchor still carries coins that have since left the list. Reading
+    // their pools would spend sub-calls on rows nobody can see.
+    const wanted = new Set(addresses.map((a) => String(a).toLowerCase()));
+    const quotes = new Map(
+      [...anchor.quotes].filter(([address]) => wanted.has(address)),
+    );
+    if (!this.freshenMarket || !quotes.size) return { chain, quotes, sources };
+    if (!this.poolMeta.has(chain)) this.poolMeta.set(chain, new Map());
+    const r = await this.freshenMarket({
+      chain,
+      quotes,
+      meta: this.poolMeta.get(chain),
+    });
+    return {
+      chain,
+      quotes: r.quotes,
+      sources: r.source ? [...sources, r.source] : sources,
+    };
   }
   async tickMarket() {
     if (!this.quoteMarket || this.marketPromise) return this.marketPromise;
@@ -643,32 +752,68 @@ export class Monitor {
       generation = s.generation,
       market = s.market;
     const current = () => s.enabled && generation === s.generation;
-    const addresses = s.candidates.map((c) => c.address);
+    // Grouped by chain because each chain has its own quote source, its own
+    // rate limit and its own RPC; one chain's outage must not blank the others.
+    const wanted = new Map(s.config.chains.map((chain) => [chain, []]));
+    for (const c of s.candidates) wanted.get(c.chain)?.push(c.address);
     market.busy = true;
     market.nextTick = null;
     this.marketPromise = (async () => {
       try {
-        if (!addresses.length) return;
-        const r = await this.quoteMarket(s.config.chain, addresses);
+        if (![...wanted.values()].some((a) => a.length)) return;
+        const lanes = await Promise.all(
+          [...wanted]
+            .filter(([, addresses]) => addresses.length)
+            .map(async ([chain, addresses]) => {
+              try {
+                return await this.quoteChain(chain, addresses, this.clock());
+              } catch (e) {
+                // A lane that threw is one chain's failure, reported as that
+                // chain's — not as a market tick that did not happen.
+                return {
+                  chain,
+                  quotes: new Map(),
+                  sources: [
+                    {
+                      name: `${CHAINS[chain]?.label || chain} 实时行情`,
+                      url: '',
+                      status: 'error',
+                      fetchedAt: new Date(this.clock()).toISOString(),
+                      error: String(e.message).slice(0, 180),
+                    },
+                  ],
+                };
+              }
+            }),
+        );
         if (!current()) return;
-        market.sources = r.sources.map(withoutData);
-        // No batches at all means this chain has no quotable endpoint, which is
-        // a different thing from a chain whose requests failed.
-        if (!r.sources.length) {
+        market.sources = lanes.flatMap((lane) =>
+          lane.sources.map((x) => ({
+            ...withoutData(x),
+            chain: lane.chain,
+          })),
+        );
+        // No batches at all means none of these chains has a quotable endpoint,
+        // which is a different thing from requests that failed.
+        if (!market.sources.length) {
           market.supported = false;
           market.error = null;
           return;
         }
         market.supported = true;
-        const failed = r.sources.filter((x) => x.status !== 'ok');
-        market.quoted = this.applyQuotes(r.quotes);
+        const failed = market.sources.filter((x) =>
+          ['error', 'unconfigured'].includes(x.status),
+        );
+        market.quoted = this.applyQuotes(
+          new Map(lanes.map((lane) => [lane.chain, lane.quotes])),
+        );
         // A tick that updated nothing must not stamp a fresh observation time:
         // the age on screen would then be the age of the request rather than of
         // the price, which is the one thing this timestamp exists to say.
         if (market.quoted)
           market.observedAt = new Date(this.clock()).toISOString();
         market.error = failed.length
-          ? `实时行情 ${failed.length}/${r.sources.length} 批未取得：${failed[0].error || '来源错误'}`
+          ? `实时行情 ${failed.length}/${market.sources.length} 批未取得（${CHAINS[failed[0].chain]?.label || failed[0].chain}）：${failed[0].error || '来源错误'}`
           : null;
       } catch (e) {
         if (current()) market.error = String(e.message).slice(0, 180);
@@ -702,42 +847,93 @@ export class Monitor {
       tracked = s.tracked;
     const current = () => s.enabled && generation === s.generation;
     const wallets = (this.watchlist?.state.entries || []).map((e) => e.address);
-    const tokens = s.candidates.map((c) => ({ id: c.id, address: c.address }));
+    const byChain = new Map(s.config.chains.map((chain) => [chain, []]));
+    for (const c of s.candidates)
+      byChain.get(c.chain)?.push({ id: c.id, address: c.address });
     tracked.busy = true;
     tracked.nextTick = null;
     this.trackedPromise = (async () => {
       try {
-        if (!wallets.length || !tokens.length) {
+        const lanes = [...byChain].filter(([, tokens]) => tokens.length);
+        if (!wallets.length || !lanes.length) {
           tracked.error = null;
           return;
         }
-        const r = await this.readTracked({
-          chain: s.config.chain,
-          tokens,
-          wallets,
-          decimals: this.trackedDecimals,
-        });
+        // Each chain is its own sweep against its own endpoint. Solana has no
+        // EVM call to make at all and simply reports that, without costing the
+        // EVM chains beside it their counts.
+        const results = await Promise.all(
+          lanes.map(async ([chain, tokens]) => {
+            try {
+              const r = await this.readTracked({
+                chain,
+                tokens,
+                wallets,
+                decimals: this.trackedDecimals,
+              });
+              return { chain, ok: true, r };
+            } catch (e) {
+              const message = String(e.message).slice(0, 180);
+              return {
+                chain,
+                ok: false,
+                // A chain with no endpoint configured is not a chain whose read
+                // failed. The page says so differently, because one of them is a
+                // thing to go fix and the other is a thing to wait out.
+                supported: !/未配置|不支持|没有 Multicall3/.test(message),
+                error: message,
+              };
+            }
+          }),
+        );
         if (!current()) return;
-        tracked.supported = true;
-        tracked.rpc = r.rpc;
-        tracked.block = r.block;
-        tracked.swept = r.wallets;
-        tracked.requests = r.requests;
-        tracked.observedAt = r.observedAt;
         // Whole-sweep replacement. A coin that dropped off the list keeps no
         // stale row, and a coin that arrived has none until it is read.
-        tracked.byCandidate = r.tokens;
-        tracked.error = r.failedChunks
-          ? `${r.failedChunks} 批余额未取得，相关地址按未核验计：${r.error}`
+        const merged = {};
+        // Token ids carry their chain, so merging the per-chain results cannot
+        // collide even when two chains hold the same address.
+        for (const lane of results)
+          if (lane.ok) Object.assign(merged, lane.r.tokens);
+        tracked.byCandidate = merged;
+        tracked.chains = results.map((lane) => ({
+          chain: lane.chain,
+          supported: lane.ok ? true : lane.supported,
+          rpc: lane.ok ? lane.r.rpc : null,
+          block: lane.ok ? lane.r.block : null,
+          swept: lane.ok ? lane.r.wallets : 0,
+          requests: lane.ok ? lane.r.requests : 0,
+          observedAt: lane.ok ? lane.r.observedAt : null,
+          error: lane.ok
+            ? lane.r.failedChunks
+              ? `${lane.r.failedChunks} 批余额未取得，相关地址按未核验计：${lane.r.error}`
+              : null
+            : lane.error,
+        }));
+        const read = tracked.chains.filter((x) => x.observedAt);
+        // The headline figures describe the whole sweep, so they take the
+        // weakest answer any chain gave: a count is only as swept as its least
+        // swept chain, and one unsupported chain makes the column partial.
+        tracked.supported = tracked.chains.some((x) => x.supported);
+        tracked.rpc = read.length === 1 ? read[0].rpc : null;
+        tracked.block = read.length === 1 ? read[0].block : null;
+        tracked.swept = read.length ? Math.min(...read.map((x) => x.swept)) : 0;
+        tracked.requests = tracked.chains.reduce((n, x) => n + x.requests, 0);
+        // The oldest of the sweeps, because that is the age the whole column is
+        // good for; the newest would overstate every chain but one.
+        tracked.observedAt = read.length
+          ? read
+              .map((x) => x.observedAt)
+              .sort((a, b) => Date.parse(a) - Date.parse(b))[0]
+          : null;
+        const broken = tracked.chains.filter((x) => x.error);
+        tracked.error = broken.length
+          ? broken
+              .map((x) => `${CHAINS[x.chain]?.label || x.chain}：${x.error}`)
+              .join('；')
           : null;
       } catch (e) {
         if (!current()) return;
-        const message = String(e.message).slice(0, 180);
-        // A chain with no endpoint configured is not a chain whose read failed.
-        // The page says so differently, because one of them is a thing to go fix
-        // and the other is a thing to wait out.
-        tracked.supported = !/未配置|不支持|没有 Multicall3/.test(message);
-        tracked.error = message;
+        tracked.error = String(e.message).slice(0, 180);
       } finally {
         tracked.busy = false;
         if (current() && this.autoSchedule) {
@@ -827,26 +1023,55 @@ export class Monitor {
       s.nextRefresh = null;
       s.error = null;
       try {
-        const r = await this.discover(s.config.chain);
+        const chains = s.config.chains;
+        const lanes = await Promise.all(
+          chains.map(async (chain) => {
+            try {
+              return { chain, ...(await this.discover(chain)) };
+            } catch (e) {
+              return {
+                chain,
+                candidates: [],
+                sources: [],
+                error: String(e.message).slice(0, 200),
+              };
+            }
+          }),
+        );
         if (generation !== s.generation || !s.enabled) return;
-        s.sources = r.sources.map(withoutData);
-        if (
-          !r.sources.some(
-            (x) =>
-              ['Robinhood Trenches', 'Trenches Radar', 'GMGN 热门'].includes(
-                x.name,
-              ) && x.status === 'ok',
-          )
-        ) {
-          s.discoveryStale = true;
-          s.error =
-            '发现来源暂不可用，保留上次成功候选与报告；它们可能已过期。';
-          return;
+        s.sources = lanes.flatMap((lane) =>
+          lane.sources.map((x) => ({ ...withoutData(x), chain: lane.chain })),
+        );
+        // Judged per chain, kept per chain. A chain whose sources are down
+        // holds the candidates it last had instead of emptying the board, and
+        // the chains beside it still refresh — which is the whole reason the
+        // last good result is stored per chain rather than as one list.
+        const down = [];
+        for (const lane of lanes) {
+          if (lane.sources.some((x) => DISCOVERY_PRIMARY.has(x.name) && x.status === 'ok')) {
+            this.baseByChain.set(lane.chain, lane.candidates);
+            continue;
+          }
+          down.push(CHAINS[lane.chain]?.label || lane.chain);
         }
-        this.baseCandidates = r.candidates;
+        // Chains that have gone away since the last refresh must not keep
+        // contributing rows to a board they are no longer part of. Deleting the
+        // key being visited is defined behaviour for a Map, so this iterates the
+        // live view rather than a copy.
+        for (const chain of this.baseByChain.keys())
+          if (!chains.includes(chain)) this.baseByChain.delete(chain);
+        this.baseCandidates = chains.flatMap(
+          (chain) => this.baseByChain.get(chain) || [],
+        );
+        s.discoveryStale = down.length > 0;
+        s.error = down.length
+          ? `${down.join('、')} 发现来源暂不可用，保留上次成功候选与报告；它们可能已过期。`
+          : null;
+        // A refresh where every chain failed learned nothing, so it must not
+        // stamp a new observation time over the one the old rows came from.
+        if (down.length === chains.length) return;
         this.reconcile();
         s.updatedAt = new Date(this.clock()).toISOString();
-        s.discoveryStale = false;
         void this.scan();
         void this.tickMarket();
       } catch (e) {
