@@ -223,6 +223,10 @@ export type TrackedRow = {
   // Addresses whose balance this coin's sweep did not obtain. They are neither
   // holders nor non-holders, and are never folded into `count`.
   unknown: number;
+  // Of those, the ones whose request never completed. The chain was never asked
+  // about them, so they say nothing about this token — which is the opposite of
+  // the remainder, where the chain was asked and the contract did not answer.
+  unreached: number;
   status: 'ok' | 'partial' | 'unchecked';
 };
 // Exact on-chain balances for a hand-maintained address list, read at one pinned

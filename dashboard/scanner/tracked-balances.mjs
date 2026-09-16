@@ -15,8 +15,25 @@ const BALANCE_OF = '70a08231';
 const DECIMALS = '313ce567';
 // Sub-calls per eth_call. 400 balanceOf reads cost roughly 1.5M gas against a
 // default 50M eth_call cap, and return about 75KB — comfortably inside both the
-// node's limits and the 8MB response ceiling in providers.mjs.
+// node's limits and the 8MB response ceiling in providers.mjs. Those are the
+// limits on what the node has to *do*, and they are the ones this number was
+// sized against.
 export const CHUNK = 400;
+// The limit that binds first is none of them: it is the size of the request.
+// Each balanceOf sub-call adds 448 bytes of hex to the body, so a 400-call batch
+// is a 175KB POST, and an endpoint that caps bodies at 131072 bytes refuses the
+// whole thing — every time, not now and then. Nothing here was measuring that,
+// so on an endpoint with such a cap this column could never have shown a number,
+// and the permanent failure arrived looking like a flaky one.
+//
+// 120KB stays under the 128KB cap those endpoints conventionally use. An
+// endpoint stricter than that is not assumed or guessed at: it is learned from
+// its own refusal, below.
+export const MAX_BODY = 120 * 1024;
+// What an endpoint turned out to accept, kept for the rest of the process.
+// Without it every sweep would rediscover the same ceiling by being refused once
+// per batch, forever.
+export const bodyLimits = new Map();
 // Chunks in flight at once. Enough that a 200-address list still sweeps well
 // inside its interval, few enough that the node is never hit with a burst.
 const LANES = 4;
@@ -28,10 +45,17 @@ export const RPC_ENV = {
   arc: 'ARC_RPC_URL',
 };
 // Arc's own documented endpoints answer 401 without Circle credentials, so the
-// default here is a community endpoint that was measured working rather than
-// assumed. It is a default, not a recommendation: ARC_RPC_URL overrides it, and
-// a rate limit on it shows up as 未核验 in the column rather than as a zero.
-const ARC_RPC = 'https://rpc.arc-scan.org';
+// default here is a public endpoint measured rather than assumed. It is a
+// default, not a recommendation: ARC_RPC_URL overrides it, and a rate limit on
+// it shows up as 未核验 in the column rather than as a zero.
+//
+// The previous default, rpc.arc-scan.org, was measured again after this column
+// came back empty on Arc, and it cannot support this read at all: it caps bodies
+// at 131072 bytes, and at the sizes it does accept it still returned 503 for
+// half of a 4-wide wave and for 24 consecutive single requests spaced a second
+// apart. This one answered every size up to 263KB and 30 of 30 requests at the
+// rate a real sweep produces.
+const ARC_RPC = 'https://arc.drpc.org';
 // Robinhood's public endpoint is already known and used elsewhere; the other
 // chains need an endpoint supplied, and say so rather than guessing at a public
 // one whose rate limit would turn into silent gaps in the counts.
@@ -123,6 +147,70 @@ export function decodeUint(hex) {
   const data = strip(hex);
   return /^[\da-fA-F]{64}$/.test(data) ? BigInt(`0x${data}`) : null;
 }
+// Hex is one body byte per character, so the encoding is the measurement rather
+// than an estimate of it: one offset word in the array's table, four words of
+// struct header, and the calldata padded up to whole words.
+export const bodyBytes = (call) =>
+  WORD * (5 + Math.ceil(strip(call.callData).length / WORD));
+// The JSON-RPC envelope, the block parameter, the `0x` and aggregate3's two
+// header words. Deliberately generous: overshooting here costs a fraction of one
+// extra request, undershooting costs the entire batch.
+const ENVELOPE = 512;
+// Fill each request up to the ceiling instead of counting sub-calls into it. The
+// size of the body is something we compute before sending, so there is no reason
+// to send one that is knowably too large and then read the refusal as an outage.
+export function packChunks(calls, maxBody = MAX_BODY, limit = CHUNK) {
+  const chunks = [];
+  let batch = [];
+  let bytes = ENVELOPE;
+  for (const call of calls) {
+    const size = bodyBytes(call);
+    if (batch.length && (batch.length >= limit || bytes + size > maxBody)) {
+      chunks.push(batch);
+      batch = [];
+      bytes = ENVELOPE;
+    }
+    batch.push(call);
+    bytes += size;
+  }
+  // A lone call wider than the ceiling still goes out: letting the node say what
+  // it thinks beats dropping the pair here in silence.
+  if (batch.length) chunks.push(batch);
+  return chunks;
+}
+// A refusal that names the size will name it again for the same bytes — there is
+// nothing to wait out, so the batch is halved and asked again and the endpoint's
+// ceiling is remembered, which is what keeps the constant above from being the
+// thing this feature depends on. Anything else may be the node having a moment,
+// and endpoints measurably do; one lost batch empties a whole coin's column, so
+// it is worth asking again before calling it a gap.
+const TOO_LARGE = /too large|413|payload|request entity|body size/i;
+const RETRIES = 2;
+const BACKOFF = 400;
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+async function readBatch(rpc, block, calls, request, attempt = 0) {
+  try {
+    return await callChunk(rpc, block, calls, request);
+  } catch (e) {
+    if (TOO_LARGE.test(String(e.message)) && calls.length > 1) {
+      const bytes = calls.reduce((n, c) => n + bodyBytes(c), ENVELOPE);
+      // Floored, so the remembered ceiling converges downward instead of
+      // creeping back up to the size that was just refused.
+      bodyLimits.set(
+        rpc,
+        Math.min(bodyLimits.get(rpc) ?? Infinity, Math.floor(bytes / 2)),
+      );
+      const half = Math.ceil(calls.length / 2);
+      return [
+        ...(await readBatch(rpc, block, calls.slice(0, half), request)),
+        ...(await readBatch(rpc, block, calls.slice(half), request)),
+      ];
+    }
+    if (attempt >= RETRIES) throw e;
+    await sleep(BACKOFF * (attempt + 1));
+    return readBatch(rpc, block, calls, request, attempt + 1);
+  }
+}
 async function callChunk(rpc, block, calls, request) {
   const raw = await request(rpc, {
     jsonrpc: '2.0',
@@ -152,9 +240,10 @@ export async function readTrackedHoldings({
   chain,
   tokens,
   wallets,
-  request,
+  request: send,
   decimals = new Map(),
   chunkSize = CHUNK,
+  maxBody = MAX_BODY,
 }) {
   if (chain === 'sol')
     throw new Error('Solana 不走 EVM 调用，这条链暂不支持链上余额核验');
@@ -163,6 +252,13 @@ export async function readTrackedHoldings({
     throw new Error(
       `${CHAINS[chain]?.label || chain} 未配置 RPC（.env.local 里的 ${RPC_ENV[chain] || 'RPC_URL'}），无法核验链上余额`,
     );
+  // Counted here rather than derived from the chunk count, because a split or a
+  // retry makes those two different numbers and the panel shows this one.
+  let sent = 0;
+  const request = (...args) => {
+    sent++;
+    return send(...args);
+  };
   const head = await request(rpc, [
     { jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] },
     { jsonrpc: '2.0', id: 2, method: 'eth_blockNumber', params: [] },
@@ -200,11 +296,13 @@ export async function readTrackedHoldings({
         callData: encodeBalanceOf(wallet),
       });
   const found = new Map(
-    tokens.map((t) => [t.id, { hits: [], ok: 0, unknown: 0 }]),
+    tokens.map((t) => [t.id, { hits: [], ok: 0, unknown: 0, unreached: 0 }]),
   );
-  const chunks = [];
-  for (let i = 0; i < calls.length; i += chunkSize)
-    chunks.push(calls.slice(i, i + chunkSize));
+  const chunks = packChunks(
+    calls,
+    Math.min(maxBody, bodyLimits.get(rpc) ?? Infinity),
+    chunkSize,
+  );
   let failed = 0;
   let error = null;
   for (let i = 0; i < chunks.length; i += LANES) {
@@ -212,14 +310,21 @@ export async function readTrackedHoldings({
       chunks.slice(i, i + LANES).map(async (batch) => {
         let rows;
         try {
-          rows = await callChunk(rpc, block, batch, request);
+          rows = await readBatch(rpc, block, batch, request);
         } catch (e) {
           // A chunk that never came back leaves its pairs unknown, not zero.
-          // Everything the other chunks did learn still counts.
+          // Everything the other chunks did learn still counts. These are
+          // counted apart from the ones the chain answered badly, because
+          // nothing was asked about the token here and saying otherwise blames
+          // the coin for the transport.
           failed++;
           error ??= String(e.message).slice(0, 140);
           for (const call of batch)
-            if (call.kind === 'balance') found.get(call.token.id).unknown++;
+            if (call.kind === 'balance') {
+              const slot = found.get(call.token.id);
+              slot.unknown++;
+              slot.unreached++;
+            }
           return;
         }
         for (const [j, call] of batch.entries()) {
@@ -247,7 +352,7 @@ export async function readTrackedHoldings({
     block: Number(BigInt(block)),
     observedAt: new Date().toISOString(),
     wallets: wallets.length,
-    requests: 1 + chunks.length,
+    requests: sent,
     failedChunks: failed,
     error,
     decimals,
@@ -257,6 +362,7 @@ export async function readTrackedHoldings({
         {
           hits: slot.hits,
           unknown: slot.unknown,
+          unreached: slot.unreached,
           // Three states, never collapsed into a number: fully read, read with
           // gaps, or not read at all. Only the first two may be shown as a
           // count — an unchecked coin is not a coin with zero holders.

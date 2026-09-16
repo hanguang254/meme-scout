@@ -19,6 +19,18 @@ const usd = (n: number | null) =>
       }).format(n);
 const clock = (s: string | null) =>
   s ? new Date(s).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
+// Why these addresses have no balance beside them. "The contract did not answer"
+// and "we never got to ask" look identical in the count and are opposite in
+// meaning: the first is about this coin, the second is about the endpoint. Only
+// the first is a reason to distrust the token, so a transport failure must not
+// borrow its wording.
+const missing = (row: { unknown: number; unreached?: number }) => {
+  const unreached = row.unreached ?? 0;
+  const refused = row.unknown - unreached;
+  if (!refused) return `${unreached} 个地址的余额请求没有送达，与这个币本身无关。`;
+  const rest = unreached ? `；另有 ${unreached} 个的请求没有送达` : '';
+  return `${refused} 个地址的 balanceOf 调用被合约拒绝，可能不是标准 ERC-20${rest}。`;
+};
 type View = {
   tone: string;
   value: string;
@@ -100,14 +112,16 @@ function build(tracked: Tracked | undefined, id: string, chain: string): View {
       head: '追踪地址｜本轮未取得',
       lines: [
         row?.unknown
-          ? `${row.unknown} 个地址的 balanceOf 调用未成功，可能不是标准 ERC-20。`
+          ? missing(row)
           : `名单 ${tracked.wallets} 个地址，每 ${tracked.intervalSeconds} 秒核验一轮。`,
         lane.error || at,
       ],
     };
   const extra: string[] = [];
   if (row.unknown)
-    extra.push(`另有 ${row.unknown} 个地址本轮未取得余额，未计入上面的数量。`);
+    extra.push(
+      `另有 ${row.unknown} 个地址本轮未取得余额，未计入上面的数量：${missing(row)}`,
+    );
   if (lane.swept && lane.swept < tracked.wallets)
     extra.push(
       `名单已改为 ${tracked.wallets} 个（这次读的是 ${lane.swept} 个），正在重新核验。`,

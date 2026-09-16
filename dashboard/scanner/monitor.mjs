@@ -990,6 +990,7 @@ export class Monitor {
         count: hits.length,
         hits,
         unknown: row.unknown,
+        unreached: row.unreached ?? 0,
         status: row.status,
       };
     }
