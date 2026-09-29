@@ -11,3 +11,11 @@ export function gmgnTokenUrl(chain: string, address: string) {
   if (!GMGN_CHAINS.includes(chain)) return '#';
   return `https://gmgn.ai/${chain}/token/${encodeURIComponent(address)}`;
 }
+// InsightX Atlas Live chain ids, from docs.insightx.network/docs/supported-chains.
+// Every chain the panel watches is on that list under the same slug. A chain
+// that is not gets no bubble-map button rather than an embed of an error page.
+export const ATLAS_CHAINS = ['sol', 'bsc', 'base', 'eth', 'robinhood', 'arc'];
+export function atlasUrl(chain: string, address: string) {
+  if (!ATLAS_CHAINS.includes(chain)) return 'about:blank';
+  return `https://embed.insightx.network/atlas/${chain}/${encodeURIComponent(address)}`;
+}

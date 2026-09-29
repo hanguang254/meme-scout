@@ -16,9 +16,16 @@ import {
 } from './providers.mjs';
 import { openTapeSocket } from './tape-socket.mjs';
 import { Watchlist } from './watchlist.mjs';
+import { Blocklist, blockId } from './blocklist.mjs';
+import { InsightX } from './insightx.mjs';
 const envFile = fileURLToPath(new URL('../.env.local', import.meta.url));
 if (fs.existsSync(envFile)) process.loadEnvFile(envFile);
 const watchlist = new Watchlist();
+// Loaded before the monitor starts, so the first discovery already skips what
+// was blocked last session instead of spending one cycle on it.
+const blocklist = new Blocklist();
+const blocked = blocklist.load();
+const insightx = new InsightX();
 const monitor = new Monitor({
   discover,
   collect,
@@ -30,6 +37,7 @@ const monitor = new Monitor({
   openTapeSocket,
   readTracked,
   watchlist,
+  blocklist,
   gmgnCooldown: () => cooldownUntil('gmgn'),
   gmgnPace,
 });
@@ -112,6 +120,21 @@ export const server = http.createServer(async (req, res) => {
         report || { error: '扫描报告尚未生成' },
       );
     }
+    // Called only when a bubble map is opened. The map is InsightX's embed and
+    // needs no key on localhost; this is just its header numbers.
+    if (req.method === 'GET' && url.pathname === '/api/insightx') {
+      const id = blockId(url.searchParams.get('id'));
+      if (!id) return reply(res, 400, { error: '代币 id 无效' });
+      if (blocklist.has(id))
+        return reply(res, 409, { error: '已拉黑的代币不再请求任何数据' });
+      try {
+        return reply(res, 200, await insightx.metrics(id));
+      } catch (e) {
+        return reply(res, insightx.configured() ? 502 : 503, {
+          error: String(e.message).slice(0, 180),
+        });
+      }
+    }
     if (req.method !== 'POST') return reply(res, 404, { error: '接口不存在' });
     if (!req.headers['content-type']?.startsWith('application/json'))
       return reply(res, 415, { error: '需要 JSON 请求' });
@@ -138,6 +161,13 @@ export const server = http.createServer(async (req, res) => {
       void cycle();
       void monitor.pollTape();
       return reply(res, 202, summary());
+    }
+    if (url.pathname === '/api/blocklist') {
+      if (typeof input.blocked !== 'boolean')
+        throw new Error('需要 blocked: true / false');
+      if (blocklist.set({ id: input.id, symbol: input.symbol }, input.blocked))
+        monitor.applyBlocklist();
+      return reply(res, 200, summary());
     }
     if (url.pathname === '/api/settings') {
       if (
@@ -172,6 +202,10 @@ server.listen(4319, '127.0.0.1', () => {
     list.present
       ? `追踪名单：${list.entries.length} 个地址${list.skipped.length ? `（${list.skipped.length} 条跳过）` : ''}`
       : '追踪名单：未配置 watchlist.json，追踪地址一列显示未配置',
+  );
+  console.log(
+    blocked.error ||
+      `拉黑名单：${blocklist.entries().length} 个代币${blocked.skipped ? `（${blocked.skipped} 条跳过）` : ''}`,
   );
   monitor.resume();
 });

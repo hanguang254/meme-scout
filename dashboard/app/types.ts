@@ -68,6 +68,9 @@ export type Candidate = {
   address: string;
   symbol: string;
   name: string;
+  // The token's logo, an https URL from whichever source had one. Absent when
+  // none did; the row then shows the symbol's first letters.
+  image?: string | null;
   marketCap: number | null;
   // Fully diluted value. Its gap from marketCap is supply that is not counted as
   // circulating; the source publishes neither the supply it used nor the reason
@@ -299,4 +302,9 @@ export type State = {
   market: Market;
   tape: Tape;
   tracked: Tracked;
+  // Tokens taken off the board by hand. The scanner stops requesting anything
+  // for them — scans, quotes, pool reads, balance sweeps — until unblocked.
+  blocked: { id: string; symbol: string; at: string | null }[];
+  // The blocklist file exists but could not be read; nothing is blocked.
+  blocklistError: string | null;
 };

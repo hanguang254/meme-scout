@@ -138,6 +138,7 @@ export class Monitor {
     openTapeSocket = null,
     readTracked = null,
     watchlist = null,
+    blocklist = null,
     autoSchedule = true,
     clock = Date.now,
     gmgnCooldown = () => 0,
@@ -150,6 +151,7 @@ export class Monitor {
     this.anchorTtl = anchorTtl;
     this.readTracked = readTracked;
     this.watchlist = watchlist;
+    this.blocklist = blocklist;
     this.gmgnCooldown = gmgnCooldown;
     this.gmgnPace = gmgnPace;
     this.autoSchedule = autoSchedule;
@@ -277,6 +279,18 @@ export class Monitor {
   }
   watching(chain) {
     return this.state.config.chains.includes(chain);
+  }
+  blocked(id) {
+    return Boolean(this.blocklist?.has(id));
+  }
+  // Called after the list changes. Discovery results are kept unfiltered in
+  // baseCandidates, so both directions take effect now: a newly blocked coin
+  // leaves the board (and every loop that reads it) at once, and an unblocked
+  // one returns from the last discovery instead of waiting up to a minute.
+  applyBlocklist() {
+    this.reconcile();
+    if (this.state.enabled) void this.scan();
+    this.push();
   }
   // Re-ordering issues no request and keeps every cached report, so unlike
   // configure() this reuses the candidates already discovered.
@@ -499,6 +513,7 @@ export class Monitor {
     for (const t of this.state.tape.events) {
       const age = this.liveIds.has(t.candidateId) ? LIVE_CANDIDATE_TTL : 120000;
       if (
+        !this.blocked(t.candidateId) &&
         eligibleBuy(t, this.clock(), age) &&
         (!latest.has(t.candidateId) || t.ts > latest.get(t.candidateId).ts)
       )
@@ -531,7 +546,14 @@ export class Monitor {
       });
     }
     live.sort((a, b) => b.lastTrade.ts - a.lastTrade.ts);
-    const merged = new Map(this.baseCandidates.map((c) => [c.id, c]));
+    // Blocked coins are dropped here, before ordering and the per-chain cap, so
+    // they hold no seat — and since every other loop reads s.candidates, they
+    // are never scanned, quoted, pool-read or swept either.
+    const merged = new Map(
+      this.baseCandidates
+        .filter((c) => !this.blocked(c.id))
+        .map((c) => [c.id, c]),
+    );
     for (const c of live) merged.set(c.id, c);
     const picked = selectCandidates([...merged.values()], s.config);
     const priority = live
@@ -559,10 +581,13 @@ export class Monitor {
     for (const [id, at] of this.scanAttempts)
       if (now - at > LIVE_CANDIDATE_TTL) this.scanAttempts.delete(id);
     // Keep recent reports across list churn, while bounding the private cache.
+    // A blocked coin's report goes at once: blocking is a decision to stop
+    // tracking it, not to hide a verdict that would otherwise go on ageing.
     for (const [id, r] of Object.entries(s.reports))
       if (
-        now - Date.parse(r.checkedAt) > LIVE_CANDIDATE_TTL &&
-        !s.candidates.some((c) => c.id === id)
+        this.blocked(id) ||
+        (now - Date.parse(r.checkedAt) > LIVE_CANDIDATE_TTL &&
+          !s.candidates.some((c) => c.id === id))
       )
         delete s.reports[id];
   }
@@ -1159,6 +1184,7 @@ export class Monitor {
           } else if (
             s.enabled &&
             generation === s.generation &&
+            !this.blocked(candidate.id) &&
             s.candidates.some((c) => c.id === candidate.id)
           )
             s.reports[candidate.id] = {
@@ -1213,7 +1239,9 @@ export class Monitor {
           !s.tape.polledAt ||
           now - Date.parse(s.tape.polledAt) > TAPE_RELABEL_INTERVAL * 3,
         events: s.tape.events.map((t) => {
-          let reason = tapeReason(t, now);
+          let reason = this.blocked(t.candidateId)
+            ? '已拉黑'
+            : tapeReason(t, now);
           if (!reason) {
             const quote = this.quoteCache.get(t.candidateId);
             reason =
@@ -1234,6 +1262,10 @@ export class Monitor {
         }),
       },
       tracked: this.trackedSummary(now),
+      // The whole list, not only coins currently discovered: the page needs it
+      // to offer an unblock for a coin that is no longer on anyone's board.
+      blocked: this.blocklist?.entries() ?? [],
+      blocklistError: this.blocklist?.state?.error ?? null,
       reports: Object.fromEntries(
         Object.entries(this.state.reports)
           .filter(([key]) => candidateIds.has(key))

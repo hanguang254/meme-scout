@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { gmgnTokenUrl, GMGN_CHAINS } from '../lib/token-links.ts';
+import {
+  gmgnTokenUrl,
+  GMGN_CHAINS,
+  atlasUrl,
+  ATLAS_CHAINS,
+} from '../lib/token-links.ts';
 import { CHAINS } from '../scanner/risk.mjs';
 
 // The coin name is the only way out of this page to a chart, so a chain that
@@ -50,4 +55,15 @@ test('地址只能落在路径的最后一段', () => {
     gmgnTokenUrl('sol', 'abc?next=https://evil.example'),
     'https://gmgn.ai/sol/token/abc%3Fnext%3Dhttps%3A%2F%2Fevil.example',
   );
+});
+
+test('面板监控的每一条链都能打开 InsightX 气泡图', () => {
+  for (const chain of Object.keys(CHAINS)) {
+    assert.ok(ATLAS_CHAINS.includes(chain), `${chain} 不在 ATLAS_CHAINS 里`);
+    assert.equal(
+      atlasUrl(chain, ADDRESS),
+      `https://embed.insightx.network/atlas/${chain}/${ADDRESS}`,
+    );
+  }
+  assert.equal(atlasUrl('tron', ADDRESS), 'about:blank');
 });

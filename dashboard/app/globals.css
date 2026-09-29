@@ -319,10 +319,14 @@ button[data-slot='button'] {
 }
 /* Anchored to the sort switch rather than to the end of the tabs: the tabs grow
    and shrink with their counts, the sort switch never does. */
-.hidden-toggle {
+.list-chips {
   position: absolute;
   right: 170px;
   top: 11px;
+  display: flex;
+  gap: 6px;
+}
+.hidden-toggle {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -382,8 +386,9 @@ button[data-slot='button'] {
     height: auto;
     padding: 8px 15px 0;
   }
-  .hidden-toggle {
+  .list-chips {
     position: static;
+    flex-wrap: wrap;
     margin: 8px 0 0 15px;
   }
 }
@@ -568,6 +573,12 @@ button[data-slot='button'] {
   color: #96c5a9;
   font-size: 12px;
   flex-shrink: 0;
+  overflow: hidden;
+}
+.mini-coin img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .hue-1 {
   background: #343050;
@@ -1372,14 +1383,63 @@ output.tape-warning {
 .row-actions {
   text-align: right;
 }
-.row-actions a {
+.row-actions {
+  white-space: nowrap;
+}
+.row-actions a,
+.row-actions button {
   display: inline-flex;
   margin-left: 11px;
+  padding: 0;
+  border: 0;
+  background: none;
   color: #7f96a2;
+  cursor: pointer;
   transition: color 0.15s;
 }
-.row-actions a:hover {
+.row-actions a:hover,
+.row-actions button:hover:not(:disabled) {
   color: #9ebfd4;
+}
+.row-actions button.is-favorite {
+  color: #e2c68e;
+}
+.row-actions button.block-token:hover:not(:disabled) {
+  color: #e7a8a8;
+}
+.row-actions button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.blocked-list {
+  display: grid;
+  gap: 8px;
+  max-height: 55vh;
+  overflow-y: auto;
+  font-size: 13px;
+}
+.blocked-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.blocked-list li > span {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.blocked-list code {
+  color: #9cafbb;
+  font-size: 12px;
+}
+.blocked-list small {
+  color: #7f96a3;
 }
 .risk-strip {
   display: flex;
@@ -1595,4 +1655,71 @@ output.tape-warning {
   .risk-chip {
     border-width: 2px;
   }
+}
+
+/* InsightX's own embed, opened from a row. Sized like the map InsightX ships
+   in its partners' popovers: square enough for the bubbles to spread. */
+.bubble-dialog {
+  width: min(760px, calc(100% - 28px)) !important;
+  max-width: min(760px, calc(100% - 28px)) !important;
+  padding: 0 !important;
+  gap: 0 !important;
+  overflow: hidden;
+  background: #111a1f !important;
+  border: 1px solid #36515c !important;
+}
+.bubble-head {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 14px 48px 14px 18px;
+  border-bottom: 1px solid var(--border);
+  background: #172229;
+}
+.bubble-head [data-slot='dialog-title'] {
+  font-size: 17px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.bubble-head [data-slot='dialog-title'] span {
+  color: #7f96a3;
+  font-weight: 400;
+}
+.bubble-head [data-slot='dialog-title'] small {
+  font-size: 12px;
+  color: #9cafbb;
+  font-weight: 400;
+}
+.bubble-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 14px;
+  color: #c6d4db;
+}
+.bubble-metrics b {
+  font-weight: 500;
+}
+.bubble-metrics .muted,
+.bubble-metrics b.muted {
+  color: #7f96a3;
+}
+.bubble-frame {
+  display: block;
+  width: 100%;
+  height: min(620px, 70vh);
+  border: 0;
+  background: #0e1519;
+}
+.bubble-note {
+  margin: 0;
+  padding: 10px 18px 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #7f96a3;
+  border-top: 1px solid var(--border);
 }

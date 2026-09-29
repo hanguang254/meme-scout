@@ -41,3 +41,6 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# tokens you blocked from the board; private like the watchlist.
+/blocklist.json

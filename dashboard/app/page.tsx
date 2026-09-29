@@ -1,9 +1,17 @@
 'use client';
-import { Fragment, useEffect, useRef, useState } from 'react';
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { LiveTape } from './live-tape';
 import { RiskPills, RiskLegend } from './risk-pills';
 import { TrackedCell } from './tracked-cell';
-import { gmgnTokenUrl } from '@/lib/token-links';
+import { BubbleMap } from './bubble-map';
+import { gmgnTokenUrl, ATLAS_CHAINS } from '@/lib/token-links';
 import {
   Radar,
   Radio,
@@ -22,6 +30,9 @@ import {
   Eye,
   EyeOff,
   Search,
+  Star,
+  Ban,
+  Bubbles,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -49,6 +60,16 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogAction,
+  AlertDialogCancel,
+} from '@/components/ui/alert-dialog';
 import type { State, Config, Candidate, Report, Source } from './types';
 // `note` is what the chain badge says on hover. It is kept in step with
 // scanner/providers.mjs, which is the authority — GOPLUS_CHAINS, HONEYPOT_CHAINS
@@ -267,6 +288,61 @@ const advance = (
   seen.current = { boot: next.boot, rev: next.rev };
   return true;
 };
+// Favourites live in this browser only. They are a way of finding a coin on the
+// board again, not a watch order: the scanner never hears about them, and a
+// favourite that has dropped off the board simply has no row to show.
+const FAVORITES_KEY = 'memescout:favorites';
+const MAX_FAVORITES = 500;
+// Read through useSyncExternalStore so the server render (no localStorage) and
+// the first client render agree, and so a star set in another tab shows here.
+const favoriteListeners = new Set<() => void>();
+const subscribeFavorites = (listener: () => void) => {
+  favoriteListeners.add(listener);
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === FAVORITES_KEY) listener();
+  };
+  window.addEventListener('storage', onStorage);
+  return () => {
+    favoriteListeners.delete(listener);
+    window.removeEventListener('storage', onStorage);
+  };
+};
+const favoritesSnapshot = () => {
+  try {
+    return localStorage.getItem(FAVORITES_KEY) || '[]';
+  } catch {
+    return '[]';
+  }
+};
+const parseFavorites = (text: string) => {
+  try {
+    const v: unknown = JSON.parse(text);
+    return new Set(
+      Array.isArray(v)
+        ? v
+            .filter((x): x is string => typeof x === 'string')
+            .slice(-MAX_FAVORITES)
+        : [],
+    );
+  } catch {
+    return new Set<string>();
+  }
+};
+const toggleFavorite = (id: string) => {
+  const next = parseFavorites(favoritesSnapshot());
+  if (!next.delete(id)) next.add(id);
+  try {
+    localStorage.setItem(
+      FAVORITES_KEY,
+      JSON.stringify([...next].slice(-MAX_FAVORITES)),
+    );
+  } catch {
+    // Private mode or a full quota: nothing to remember it in.
+  }
+  favoriteListeners.forEach((l) => l());
+};
+const shortAddress = (a: string) =>
+  a.length > 14 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
 export default function Home() {
   const [state, setState] = useState<State | null>(null),
     [selected, setSelected] = useState<string | null>(null),
@@ -281,8 +357,25 @@ export default function Home() {
     // throws away the reports collected so far, so picking three chains has to
     // cost one reset, not three — the draft is committed when the popup closes.
     [chainDraft, setChainDraft] = useState<string[] | null>(null),
+    // The coin whose block is waiting on the confirm dialog.
+    [blockTarget, setBlockTarget] = useState<Candidate | null>(null),
+    [blockedOpen, setBlockedOpen] = useState(false),
+    // The coin whose bubble map is open. Nothing is requested until it is set.
+    [bubbleCoin, setBubbleCoin] = useState<Candidate | null>(null),
+    // Logo URLs that failed to load. Keyed by URL, not coin, so a source that
+    // later publishes a different picture gets another try.
+    [brokenImages, setBrokenImages] = useState<Set<string>>(() => new Set()),
     [observedNow, setObservedNow] = useState(0);
   const seen = useRef({ boot: '', rev: 0 });
+  const favoritesText = useSyncExternalStore(
+    subscribeFavorites,
+    favoritesSnapshot,
+    () => '[]',
+  );
+  const favorites = useMemo(
+    () => parseFavorites(favoritesText),
+    [favoritesText],
+  );
   const pace = state?.gmgnPace;
   const marketAge = ageText(state?.market?.observedAt, observedNow);
   const [config, setConfig] = useState<Config>({
@@ -395,8 +488,15 @@ export default function Home() {
         ? ['严重风险', '发现高风险'].includes(
             state?.reports[c.id]?.verdict || '',
           )
-        : !state?.reports[c.id],
+        : mode === 'fav'
+          ? favorites.has(c.id)
+          : !state?.reports[c.id],
   );
+  const favCount = (state?.candidates || []).filter((c) =>
+    favorites.has(c.id),
+  ).length;
+  // Absent from a data service that predates the blocklist.
+  const blocklist = state?.blocked ?? [];
   const riskCount = Object.values(state?.reports || {}).filter((r) =>
     ['严重风险', '发现高风险'].includes(r.verdict),
   ).length;
@@ -529,6 +629,12 @@ export default function Home() {
             <CircleAlert size={17} />
             {error || state?.error}
           </div>
+        )}
+        {state?.blocklistError && (
+          <output className="error-banner">
+            <CircleAlert size={17} />
+            {state.blocklistError}
+          </output>
         )}
         {pace && pace.current < pace.target && (
           <output className="error-banner">
@@ -783,8 +889,26 @@ export default function Home() {
                     )}
                   </span>
                 </TabsTrigger>
+                <TabsTrigger
+                  value="fav"
+                  title="收藏只存在这个浏览器里，不影响扫描：收藏的币照常更新，掉出榜单后这里就不再显示，回到榜单时仍是收藏状态。"
+                >
+                  已收藏<span>{favCount}</span>
+                </TabsTrigger>
               </TabsList>
             </Tabs>
+            <div className="list-chips">
+            {blocklist.length > 0 && (
+              <button
+                type="button"
+                className="hidden-toggle"
+                onClick={() => setBlockedOpen(true)}
+                title="拉黑的币不再扫描、报价、读池子或核对追踪地址，直到解除。点开可以解除。"
+              >
+                <Ban size={12} />
+                已拉黑 {blocklist.length}
+              </button>
+            )}
             {blocked.size > 0 && (
               <button
                 type="button"
@@ -799,6 +923,7 @@ export default function Home() {
                 {showHidden ? '收起' : '已隐藏'} {blocked.size} 个检出不可卖出
               </button>
             )}
+            </div>
             <div className="sort-switch">
               <span aria-hidden>排序</span>
               {(
@@ -871,7 +996,28 @@ export default function Home() {
                               {String(i + 1).padStart(2, '0')}
                             </span>
                             <span className={`mini-coin hue-${i % 4}`}>
-                              {c.symbol.slice(0, 2)}
+                              {c.image &&
+                              safeUrl(c.image) !== '#' &&
+                              !brokenImages.has(c.image) ? (
+                                // A 31px logo from whatever host the source
+                                // names: an optimiser would need every such
+                                // host allow-listed, and gains nothing here.
+                                // oxlint-disable-next-line nextjs/no-img-element
+                                <img
+                                  src={c.image}
+                                  alt=""
+                                  loading="lazy"
+                                  referrerPolicy="no-referrer"
+                                  onError={() => {
+                                    const bad = c.image as string;
+                                    setBrokenImages((prev) =>
+                                      new Set(prev).add(bad),
+                                    );
+                                  }}
+                                />
+                              ) : (
+                                c.symbol.slice(0, 2)
+                              )}
                             </span>
                             <span>
                               <span className="token-head">
@@ -1049,6 +1195,54 @@ export default function Home() {
                           />
                         </TableCell>
                         <TableCell className="row-actions">
+                          {ATLAS_CHAINS.includes(c.chain) && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setBubbleCoin(c);
+                              }}
+                              title={`查看 ${c.symbol} 的 InsightX 持有人气泡图（点开才读取）`}
+                              aria-label={`查看 ${c.symbol} 的捆绑气泡图`}
+                            >
+                              <Bubbles size={15} />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className={
+                              favorites.has(c.id) ? 'is-favorite' : undefined
+                            }
+                            aria-pressed={favorites.has(c.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleFavorite(c.id);
+                            }}
+                            title={
+                              favorites.has(c.id)
+                                ? `取消收藏 ${c.symbol}`
+                                : `收藏 ${c.symbol}（只存在这个浏览器里，数据照常更新）`
+                            }
+                            aria-label={`收藏 ${c.symbol}`}
+                          >
+                            <Star
+                              size={15}
+                              fill={favorites.has(c.id) ? 'currentColor' : 'none'}
+                            />
+                          </button>
+                          <button
+                            type="button"
+                            className="block-token"
+                            disabled={pending}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setBlockTarget(c);
+                            }}
+                            title={`拉黑 ${c.symbol}：移出榜单，不再为它请求任何数据`}
+                            aria-label={`拉黑 ${c.symbol}`}
+                          >
+                            <Ban size={15} />
+                          </button>
                           <a
                             href={safeUrl(gmgnTokenUrl(c.chain, c.address))}
                             target="_blank"
@@ -1099,6 +1293,8 @@ export default function Home() {
                   ? '正在发现链上热门候选'
                   : mode === 'risk'
                     ? '当前没有已标出的高风险候选'
+                    : mode === 'fav'
+                      ? '榜上没有收藏的币'
                     : mode === 'all' && blocked.size > 0
                       ? `当前候选全部检出不可卖出，已隐藏 ${blocked.size} 个`
                       : '当前筛选下没有候选'}
@@ -1106,6 +1302,8 @@ export default function Home() {
               <p>
                 {mode === 'risk'
                   ? '未扫描、未知和数据缺失都不能视为安全。'
+                  : mode === 'fav'
+                    ? '点行尾的星标收藏。收藏的币掉出榜单后不在这里显示，回到榜单时仍是收藏状态。'
                   : mode === 'all' && blocked.size > 0
                     ? '点上方的「已隐藏」可以展开查看，它们也在「高风险」页签里。'
                     : '榜单自动更新。可调整市值 / 流动性范围，或切换监控链。'}
@@ -1127,6 +1325,88 @@ export default function Home() {
             <SourceList sources={state?.sources || []} />
           </div>
         </section>
+        <AlertDialog
+          open={blockTarget !== null}
+          onOpenChange={(open) => {
+            if (!open) setBlockTarget(null);
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>拉黑 {blockTarget?.symbol}？</AlertDialogTitle>
+              <AlertDialogDescription>
+                它会立刻从榜单移除，已有的核验报告会被删除；之后扫描、行情、链上池子和追踪地址都不再为它发请求，LIVE
+                TAPE 里它的成交也不再触发。名单保存在本机，重启后仍然生效，可以随时在「已拉黑」里解除。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>取消</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={pending}
+                onClick={() => {
+                  const c = blockTarget;
+                  if (!c) return;
+                  void post('/api/blocklist', {
+                    id: c.id,
+                    symbol: c.symbol,
+                    blocked: true,
+                  }).then((ok) => {
+                    if (!ok) return;
+                    setBlockTarget(null);
+                    if (selected === c.id) setSelected(null);
+                  });
+                }}
+              >
+                拉黑
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        <BubbleMap coin={bubbleCoin} onClose={() => setBubbleCoin(null)} />
+        <Dialog open={blockedOpen} onOpenChange={setBlockedOpen}>
+          <DialogContent className="settings-dialog">
+            <DialogHeader>
+              <DialogTitle>已拉黑 {blocklist.length}</DialogTitle>
+              <DialogDescription>
+                这些币不再扫描、报价、读池子或核对追踪地址。解除后，下一轮发现如果还在榜上，它会重新排队核验。
+              </DialogDescription>
+            </DialogHeader>
+            <ul className="blocked-list">
+              {blocklist.map((b) => {
+                const cut = b.id.indexOf(':');
+                const chain = b.id.slice(0, cut);
+                const address = b.id.slice(cut + 1);
+                return (
+                  <li key={b.id}>
+                    <span>
+                      <strong>{b.symbol || '未知'}</strong>
+                      <span className="chain-tag">
+                        {chainOf(chain)?.tag || chain}
+                      </span>
+                      <code title={address}>{shortAddress(address)}</code>
+                      <small>{b.at ? new Date(b.at).toLocaleString('zh-CN') : ''}</small>
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={pending}
+                      onClick={() =>
+                        void post('/api/blocklist', {
+                          id: b.id,
+                          blocked: false,
+                        })
+                      }
+                    >
+                      解除拉黑
+                    </Button>
+                  </li>
+                );
+              })}
+              {!blocklist.length && <li>没有拉黑的币。</li>}
+            </ul>
+          </DialogContent>
+        </Dialog>
         <footer className="page-footer">
           <span>
             <Radar size={14} />

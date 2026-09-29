@@ -208,6 +208,27 @@ function rows(raw) {
         ? raw.tokens
         : [];
 }
+// The coin's picture, as the source published it. Only an absolute https URL
+// is kept: the page puts this straight into an <img>, and a source string that
+// is a data: or javascript: URL, or plain http on an https page, is not
+// something to load. Anything else is simply no picture, and the page falls
+// back to the two-letter badge.
+export function imageUrl(v) {
+  if (typeof v !== 'string' || v.length > 2048) return null;
+  try {
+    const u = new URL(v.trim());
+    return u.protocol === 'https:' ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+// Spread into a quote only when there is a picture. A quote is merged over the
+// candidate, and an `image: null` key there would erase the logo discovery
+// found every time a source that publishes none re-quoted the coin.
+const withImage = (v) => {
+  const image = imageUrl(v);
+  return image ? { image } : {};
+};
 function id(chain, address) {
   return `${chain}:${chain === 'sol' ? address : address.toLowerCase()}`;
 }
@@ -218,6 +239,7 @@ function gmgnCandidate(r, chain) {
     address: r.address,
     symbol: r.symbol || '?',
     name: r.name || '',
+    ...withImage(r.logo),
     marketCap: number(r.market_cap),
     liquidity: number(r.liquidity),
     price: number(r.price),
@@ -332,6 +354,7 @@ export function marketFields(p) {
     // quantity a pool read produces — comparing the two needs no supply figure
     // and no dollar rate, so every assumption behind them cancels.
     ...poolRef(p?.pairAddress, p?.labels, p?.quoteToken?.address, p?.priceNative),
+    ...withImage(p?.info?.imageUrl),
   };
 }
 // The pool coordinates a quote carries so the on-chain lane can find it again.
@@ -401,6 +424,9 @@ function geckoQuote(token, pool) {
       positive(a.base_token_price_quote_token) ??
         (base && quote ? base / quote : null),
     ),
+    // GeckoTerminal answers a token it has no picture for with the bare string
+    // "missing.png", which is not an absolute URL and so reads as none here.
+    ...withImage(t.image_url),
   };
 }
 async function quoteGecko(chain, slug, unique) {
@@ -727,6 +753,9 @@ export async function discover(chain) {
           found.marketCapSource = 'GMGN';
         }
         found.rugRatio = number(r.rug_ratio);
+        // DexScreener has no picture for many young Robinhood coins; GMGN's
+        // cross-check often does. Filled only when still missing.
+        if (!found.image) Object.assign(found, withImage(r.logo));
       } else candidates.push(gmgnCandidate(r, chain));
     }
     for (const c of candidates) {
