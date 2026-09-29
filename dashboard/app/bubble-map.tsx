@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { ExternalLink } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -7,7 +8,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
-import { atlasUrl } from '@/lib/token-links';
+import { atlasUrl, bubblemapsUrl, ATLAS_EMBED_HOSTS } from '@/lib/token-links';
 import type { Candidate } from './types';
 type Metrics = {
   id: string;
@@ -56,6 +57,11 @@ export function BubbleMap({
   const own = result && result.id === id ? result : null;
   const m = own?.data;
   const evm = coin?.chain !== 'sol';
+  // Read only while open, which is only ever after a click on the client, so
+  // the server render (always closed) has nothing to disagree with.
+  const embeddable =
+    coin !== null && ATLAS_EMBED_HOSTS.includes(window.location.hostname);
+  const external = coin ? bubblemapsUrl(coin.chain, coin.address) : '#';
   return (
     <Dialog
       open={coin !== null}
@@ -107,7 +113,7 @@ export function BubbleMap({
             InsightX 持有人关系气泡图
           </DialogDescription>
         </DialogHeader>
-        {coin && (
+        {coin && embeddable && (
           <iframe
             className="bubble-frame"
             src={atlasUrl(coin.chain, coin.address)}
@@ -116,10 +122,37 @@ export function BubbleMap({
             referrerPolicy="strict-origin-when-cross-origin"
           />
         )}
+        {coin && !embeddable && (
+          <div className="bubble-away">
+            <p>
+              InsightX 只允许在本机地址（localhost /
+              127.0.0.1）免费嵌入气泡图，这个域名下嵌进来只会显示拒绝页，所以在它的官网打开。
+            </p>
+            <a
+              className="bubble-open"
+              href={external}
+              target="_blank"
+              rel="noreferrer"
+            >
+              在 InsightX 打开 {coin.symbol} 的气泡图
+              <ExternalLink size={15} />
+            </a>
+          </div>
+        )}
+        {coin && embeddable && (
+          <a
+            className="bubble-away-link"
+            href={external}
+            target="_blank"
+            rel="noreferrer"
+          >
+            在 InsightX 官网打开
+            <ExternalLink size={12} />
+          </a>
+        )}
         <p className="bubble-note">
           图和比例都来自
-          InsightX，只在你点开时读取。钱包之间连线表示有过转账或共同资金来源，不证明同一控制人；本地开发域名可免费使用，部署到其他域名需要
-          InsightX 的白名单和 embed_id。
+          InsightX，只在你点开时读取。钱包之间连线表示有过转账或共同资金来源，不证明同一控制人。
         </p>
       </DialogContent>
     </Dialog>

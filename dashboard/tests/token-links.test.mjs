@@ -5,6 +5,8 @@ import {
   GMGN_CHAINS,
   atlasUrl,
   ATLAS_CHAINS,
+  ATLAS_EMBED_HOSTS,
+  bubblemapsUrl,
 } from '../lib/token-links.ts';
 import { CHAINS } from '../scanner/risk.mjs';
 
@@ -66,4 +68,19 @@ test('面板监控的每一条链都能打开 InsightX 气泡图', () => {
     );
   }
   assert.equal(atlasUrl('tron', ADDRESS), 'about:blank');
+});
+
+test('部署到别的域名时跳转 InsightX 官网，地址和链都编码进路径', () => {
+  for (const chain of Object.keys(CHAINS))
+    assert.equal(
+      bubblemapsUrl(chain, ADDRESS),
+      `https://app.insightx.network/bubblemaps/${chain}/${ADDRESS}`,
+    );
+  assert.equal(bubblemapsUrl('tron', ADDRESS), '#');
+  assert.equal(
+    bubblemapsUrl('sol', 'abc/../x?y'),
+    'https://app.insightx.network/bubblemaps/sol/abc%2F..%2Fx%3Fy',
+  );
+  // Only what InsightX's CSP lets frame the embed without an embed_id.
+  assert.deepEqual(ATLAS_EMBED_HOSTS, ['localhost', '127.0.0.1', '0.0.0.0']);
 });
