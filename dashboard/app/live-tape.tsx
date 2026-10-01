@@ -8,9 +8,7 @@ import {
   Copy,
   Check,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Button, Input, Tabs, TabsList, TabsTrigger } from './ui';
 import {
   Table,
   TableHeader,
@@ -146,7 +144,7 @@ export function LiveTape({
         </div>
         <div className="tape-controls">
           <Tabs value={side} onValueChange={setSide}>
-            <TabsList>
+            <TabsList aria-label="实时交易方向筛选">
               <TabsTrigger value="all">全部</TabsTrigger>
               <TabsTrigger value="buy">买入</TabsTrigger>
               <TabsTrigger value="sell">卖出</TabsTrigger>
@@ -186,7 +184,8 @@ export function LiveTape({
       </div>
       {tape?.revisionStale && enabled && (
         <output className="tape-warning">
-          已展示行的兜底全量重读未按时完成：推送只覆盖来源当前标记的 ID 区间，区间以外的改判暂未取得。
+          已展示行的兜底全量重读未按时完成：推送只覆盖来源当前标记的 ID
+          区间，区间以外的改判暂未取得。
         </output>
       )}
       {tape?.error && (

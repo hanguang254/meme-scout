@@ -9,6 +9,7 @@ import {
   bubblemapsUrl,
 } from '../lib/token-links.ts';
 import { CHAINS } from '../scanner/risk.mjs';
+import * as tokenLinks from '../lib/token-links.ts';
 
 // The coin name is the only way out of this page to a chart, so a chain that
 // silently yields `#` looks to the user like a click that does nothing. The
@@ -83,4 +84,20 @@ test('部署到别的域名时跳转 InsightX 官网，地址和链都编码进�
   );
   // Only what InsightX's CSP lets frame the embed without an embed_id.
   assert.deepEqual(ATLAS_EMBED_HOSTS, ['localhost', '127.0.0.1', '0.0.0.0']);
+});
+
+test('只有 InsightX 允许的本机地址使用悬停嵌入', () => {
+  for (const host of ['localhost', '127.0.0.1', '0.0.0.0'])
+    assert.equal(tokenLinks.canEmbedAtlas?.(host), true, host);
+  // A deployment, a LAN address, or a lookalike must use the direct link.
+  for (const host of [
+    '',
+    'scout.example.com',
+    '192.168.1.5',
+    '::1',
+    'meme.localhost',
+    'localhost.example.com',
+    '127.0.0.1.example.com',
+  ])
+    assert.equal(tokenLinks.canEmbedAtlas?.(host), false, host);
 });

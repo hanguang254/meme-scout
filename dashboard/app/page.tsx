@@ -10,8 +10,9 @@ import {
 import { LiveTape } from './live-tape';
 import { RiskPills, RiskLegend } from './risk-pills';
 import { TrackedCell } from './tracked-cell';
-import { BubbleMap } from './bubble-map';
-import { gmgnTokenUrl, ATLAS_CHAINS } from '@/lib/token-links';
+import { BubbleMapAction } from './bubble-map';
+import { Select, ListBox, Label } from '@heroui/react';
+import { gmgnTokenUrl } from '@/lib/token-links';
 import {
   Radar,
   Radio,
@@ -32,18 +33,7 @@ import {
   Search,
   Star,
   Ban,
-  Bubbles,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
-} from '@/components/ui/select';
 import {
   Table,
   TableHeader,
@@ -59,7 +49,12 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
-} from '@/components/ui/dialog';
+  Button,
+  Input,
+  Tabs,
+  TabsList,
+  TabsTrigger,
+} from './ui';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -69,7 +64,7 @@ import {
   AlertDialogFooter,
   AlertDialogAction,
   AlertDialogCancel,
-} from '@/components/ui/alert-dialog';
+} from './ui';
 import type { State, Config, Candidate, Report, Source } from './types';
 // `note` is what the chain badge says on hover. It is kept in step with
 // scanner/providers.mjs, which is the authority — GOPLUS_CHAINS, HONEYPOT_CHAINS
@@ -158,7 +153,10 @@ const time = (s: string | null | undefined) =>
 // green. Green and red mean only "moved up / moved down since the check" —
 // a rise on a token that can still be minted is not good news, so this reuses
 // the same green/red as the 1h change column and never the risk colours.
-const drift = (then: number | null | undefined, now: number | null | undefined) => {
+const drift = (
+  then: number | null | undefined,
+  now: number | null | undefined,
+) => {
   if (then == null || now == null || then === 0) return null;
   const raw = ((now - then) / then) * 100;
   const digits = Math.abs(raw) < 10 ? 1 : 0;
@@ -202,7 +200,13 @@ const ageText = (at: string | null | undefined, now: number) => {
 // tooltips say the search turns up nothing verified and the account is not
 // checked for being real or the owner's.
 const XLogo = () => (
-  <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden>
+  <svg
+    viewBox="0 0 24 24"
+    width="12"
+    height="12"
+    fill="currentColor"
+    aria-hidden
+  >
     <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24h-6.66l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
   </svg>
 );
@@ -360,8 +364,6 @@ export default function Home() {
     // The coin whose block is waiting on the confirm dialog.
     [blockTarget, setBlockTarget] = useState<Candidate | null>(null),
     [blockedOpen, setBlockedOpen] = useState(false),
-    // The coin whose bubble map is open. Nothing is requested until it is set.
-    [bubbleCoin, setBubbleCoin] = useState<Candidate | null>(null),
     // Logo URLs that failed to load. Keyed by URL, not coin, so a source that
     // later publishes a different picture gets another try.
     [brokenImages, setBrokenImages] = useState<Set<string>>(() => new Set()),
@@ -516,6 +518,7 @@ export default function Home() {
           </span>
           <strong>
             meme<span>scout</span>
+            <small>TERMINAL</small>
           </strong>
           <span className="brand-label">链上排雷工作台</span>
         </div>
@@ -525,9 +528,7 @@ export default function Home() {
             本机运行
           </span>
           <Dialog>
-            <DialogTrigger
-              render={<Button variant="outline" className="subtle-button" />}
-            >
+            <DialogTrigger variant="outline" className="subtle-button">
               <Settings2 size={16} />
               数据连接
             </DialogTrigger>
@@ -590,17 +591,29 @@ export default function Home() {
         </div>
       </header>
       <div className="workspace">
+        <div className="workspace-breadcrumb">
+          <span>
+            <Radar size={13} /> 工作台
+          </span>
+          <span>/</span>
+          <span>多链发现</span>
+          <span className="workspace-network">
+            {watching.length} 条链已接入监控
+          </span>
+        </div>
         <section className="monitor-toolbar">
           <div>
-            <div className="eyebrow">LIVE DISCOVERY</div>
+            <div className="eyebrow">ONCHAIN INTELLIGENCE</div>
             <h1>
-              发现热度，先看风险
+              链上发现
               <span className="live-status">
-                <span className={`dot ${state?.enabled ? 'live' : 'off'}`} />
-                {state?.enabled ? '监控中' : '已暂停'}
+                <span
+                  className={`dot ${state ? (state.enabled ? 'live' : 'off') : ''}`}
+                />
+                {state ? (state.enabled ? '监控中' : '已暂停') : '连接中'}
               </span>
             </h1>
-            <p>每 60 秒发现热门候选 · 风险检查独立排队执行</p>
+            <p>发现热度，先看风险。热门候选每 60 秒更新，证据独立核验。</p>
           </div>
           <div className="monitor-actions">
             <Button
@@ -730,13 +743,21 @@ export default function Home() {
           <div className="market-controls">
             <div className="market-title">
               <Activity size={18} />
-              <h2>热门候选</h2>
+              <div>
+                <span className="panel-kicker">MARKET RADAR</span>
+                <h2>热门候选</h2>
+              </div>
             </div>
-            <div className="market-select">
+            <div
+              className="market-select"
+              title={(chainDraft ?? watching).map(chainNote).join('\n\n')}
+            >
               <Select
-                multiple
+                selectionMode="multiple"
+                isDisabled={pending}
+                aria-label="选择监控链，可多选"
                 value={chainDraft ?? watching}
-                onValueChange={(value) =>
+                onChange={(value) =>
                   setChainDraft(orderChains(value as string[]))
                 }
                 onOpenChange={(open) => {
@@ -753,28 +774,39 @@ export default function Home() {
                   void post('/api/monitor', { config: c, enabled: true });
                 }}
               >
-                <SelectTrigger
+                <Select.Trigger
+                  data-slot="select-trigger"
                   aria-label="选择监控链，可多选"
-                  title={(chainDraft ?? watching).map(chainNote).join('\n\n')}
                 >
-                  <SelectValue>
+                  <Select.Value>
                     {((ids: string[]) =>
                       ids.length === 1
                         ? chainLabel(ids[0])
                         : ids.length <= 3
                           ? ids.map((id) => chainOf(id)?.tag || id).join(' · ')
                           : `${ids.length} 条链`)(chainDraft ?? watching)}
-                  </SelectValue>
-                </SelectTrigger>
+                  </Select.Value>
+                  <Select.Indicator />
+                </Select.Trigger>
                 {/* No single selected item to align the popup to once more than
                     one can be checked. */}
-                <SelectContent alignItemWithTrigger={false}>
-                  {chains.map((c) => (
-                    <SelectItem key={c.id} value={c.id} title={c.note}>
-                      {c.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
+                <Select.Popover>
+                  <ListBox aria-label="监控链">
+                    {chains.map((c) => (
+                      <ListBox.Item
+                        key={c.id}
+                        id={c.id}
+                        textValue={c.label}
+                        aria-label={`${c.label}：${c.note}`}
+                      >
+                        <Label>
+                          <span title={c.note}>{c.label}</span>
+                        </Label>
+                        <ListBox.ItemIndicator />
+                      </ListBox.Item>
+                    ))}
+                  </ListBox>
+                </Select.Popover>
               </Select>
               <Button
                 variant="outline"
@@ -898,31 +930,31 @@ export default function Home() {
               </TabsList>
             </Tabs>
             <div className="list-chips">
-            {blocklist.length > 0 && (
-              <button
-                type="button"
-                className="hidden-toggle"
-                onClick={() => setBlockedOpen(true)}
-                title="拉黑的币不再扫描、报价、读池子或核对追踪地址，直到解除。点开可以解除。"
-              >
-                <Ban size={12} />
-                已拉黑 {blocklist.length}
-              </button>
-            )}
-            {blocked.size > 0 && (
-              <button
-                type="button"
-                className={`hidden-toggle${showHidden ? ' is-open' : ''}`}
-                onClick={() => setShowHidden(!showHidden)}
-                title={
-                  '这些币有来源明确报告无法卖出（貔貅 / 无法全部卖出），已从「全部候选」移出；「高风险」页签里仍然在，报告和导出都没有删。\n' +
-                  '这只是把检出的拿掉，不代表剩下的已验证可卖：榜上多数币的卖出检测是「未取得」。'
-                }
-              >
-                {showHidden ? <Eye size={12} /> : <EyeOff size={12} />}
-                {showHidden ? '收起' : '已隐藏'} {blocked.size} 个检出不可卖出
-              </button>
-            )}
+              {blocklist.length > 0 && (
+                <button
+                  type="button"
+                  className="hidden-toggle"
+                  onClick={() => setBlockedOpen(true)}
+                  title="拉黑的币不再扫描、报价、读池子或核对追踪地址，直到解除。点开可以解除。"
+                >
+                  <Ban size={12} />
+                  已拉黑 {blocklist.length}
+                </button>
+              )}
+              {blocked.size > 0 && (
+                <button
+                  type="button"
+                  className={`hidden-toggle${showHidden ? ' is-open' : ''}`}
+                  onClick={() => setShowHidden(!showHidden)}
+                  title={
+                    '这些币有来源明确报告无法卖出（貔貅 / 无法全部卖出），已从「全部候选」移出；「高风险」页签里仍然在，报告和导出都没有删。\n' +
+                    '这只是把检出的拿掉，不代表剩下的已验证可卖：榜上多数币的卖出检测是「未取得」。'
+                  }
+                >
+                  {showHidden ? <Eye size={12} /> : <EyeOff size={12} />}
+                  {showHidden ? '收起' : '已隐藏'} {blocked.size} 个检出不可卖出
+                </button>
+              )}
             </div>
             <div className="sort-switch">
               <span aria-hidden>排序</span>
@@ -1030,6 +1062,7 @@ export default function Home() {
                                   className="token-pick"
                                   onClick={() => setSelected(c.id)}
                                   aria-label={`高亮 ${c.symbol}`}
+                                  aria-pressed={selected === c.id}
                                 >
                                   {c.symbol}
                                 </button>
@@ -1140,8 +1173,8 @@ export default function Home() {
                               className="flow-live"
                               title={`最近 5 分钟：成交 ${money(c.volume5m)}，买 ${c.buys5m ?? '未知'} 笔 / 卖 ${c.sells5m ?? '未知'} 笔。与上面的成交额一样每 ${state?.market?.intervalSeconds ?? 15} 秒重取，是实时值；报告里的「5 分钟盘面」是上次重扫时的快照，两者会对不上。笔数不参与风险判级。`}
                             >
-                              5m {money(c.volume5m)} 买
-                              {c.buys5m ?? '?'}/卖{c.sells5m ?? '?'}
+                              5m {money(c.volume5m)} 买{c.buys5m ?? '?'}/卖
+                              {c.sells5m ?? '?'}
                             </small>
                           )}
                         </TableCell>
@@ -1195,19 +1228,7 @@ export default function Home() {
                           />
                         </TableCell>
                         <TableCell className="row-actions">
-                          {ATLAS_CHAINS.includes(c.chain) && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setBubbleCoin(c);
-                              }}
-                              title={`查看 ${c.symbol} 的 InsightX 持有人气泡图（点开才读取）`}
-                              aria-label={`查看 ${c.symbol} 的捆绑气泡图`}
-                            >
-                              <Bubbles size={15} />
-                            </button>
-                          )}
+                          <BubbleMapAction coin={c} />
                           <button
                             type="button"
                             className={
@@ -1227,7 +1248,9 @@ export default function Home() {
                           >
                             <Star
                               size={15}
-                              fill={favorites.has(c.id) ? 'currentColor' : 'none'}
+                              fill={
+                                favorites.has(c.id) ? 'currentColor' : 'none'
+                              }
                             />
                           </button>
                           <button
@@ -1295,18 +1318,18 @@ export default function Home() {
                     ? '当前没有已标出的高风险候选'
                     : mode === 'fav'
                       ? '榜上没有收藏的币'
-                    : mode === 'all' && blocked.size > 0
-                      ? `当前候选全部检出不可卖出，已隐藏 ${blocked.size} 个`
-                      : '当前筛选下没有候选'}
+                      : mode === 'all' && blocked.size > 0
+                        ? `当前候选全部检出不可卖出，已隐藏 ${blocked.size} 个`
+                        : '当前筛选下没有候选'}
               </h3>
               <p>
                 {mode === 'risk'
                   ? '未扫描、未知和数据缺失都不能视为安全。'
                   : mode === 'fav'
                     ? '点行尾的星标收藏。收藏的币掉出榜单后不在这里显示，回到榜单时仍是收藏状态。'
-                  : mode === 'all' && blocked.size > 0
-                    ? '点上方的「已隐藏」可以展开查看，它们也在「高风险」页签里。'
-                    : '榜单自动更新。可调整市值 / 流动性范围，或切换监控链。'}
+                    : mode === 'all' && blocked.size > 0
+                      ? '点上方的「已隐藏」可以展开查看，它们也在「高风险」页签里。'
+                      : '榜单自动更新。可调整市值 / 流动性范围，或切换监控链。'}
               </p>
             </div>
           )}
@@ -1336,7 +1359,8 @@ export default function Home() {
               <AlertDialogTitle>拉黑 {blockTarget?.symbol}？</AlertDialogTitle>
               <AlertDialogDescription>
                 它会立刻从榜单移除，已有的核验报告会被删除；之后扫描、行情、链上池子和追踪地址都不再为它发请求，LIVE
-                TAPE 里它的成交也不再触发。名单保存在本机，重启后仍然生效，可以随时在「已拉黑」里解除。
+                TAPE
+                里它的成交也不再触发。名单保存在本机，重启后仍然生效，可以随时在「已拉黑」里解除。
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -1363,7 +1387,6 @@ export default function Home() {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
-        <BubbleMap coin={bubbleCoin} onClose={() => setBubbleCoin(null)} />
         <Dialog open={blockedOpen} onOpenChange={setBlockedOpen}>
           <DialogContent className="settings-dialog">
             <DialogHeader>
@@ -1385,7 +1408,9 @@ export default function Home() {
                         {chainOf(chain)?.tag || chain}
                       </span>
                       <code title={address}>{shortAddress(address)}</code>
-                      <small>{b.at ? new Date(b.at).toLocaleString('zh-CN') : ''}</small>
+                      <small>
+                        {b.at ? new Date(b.at).toLocaleString('zh-CN') : ''}
+                      </small>
                     </span>
                     <Button
                       variant="outline"

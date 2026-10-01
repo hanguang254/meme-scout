@@ -21,8 +21,11 @@ export function atlasUrl(chain: string, address: string) {
 }
 // The embed above only renders for the hosts InsightX lets frame it without an
 // embed_id: its CSP lists them, and the page checks them again in script. On
-// any other host it shows a refusal, so the popup links out instead.
+// any other host it shows a refusal, so the row action links out directly.
 export const ATLAS_EMBED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0'];
+export function canEmbedAtlas(hostname: string) {
+  return ATLAS_EMBED_HOSTS.includes(hostname);
+}
 // InsightX's own site. It opens anywhere as a top-level page, but inside an
 // iframe on a host it does not know it replaces the map with an "Atlas has
 // been decommissioned" notice — so it is only ever a new-tab link, never framed.
